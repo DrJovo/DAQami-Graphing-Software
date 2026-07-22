@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ThermoScope</title>
+<link rel="stylesheet" href="src/styles.css?v=1">
+</head>
+<body>
+<div id="app">
+  <!-- ============================ MENU BAR ============================ -->
+  <header class="menubar" id="menubar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="1" y="1" width="22" height="22" rx="6" fill="var(--accent)"/>
+        <path d="M8 17V9a4 4 0 0 1 8 0v8" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+        <circle cx="12" cy="17.5" r="2.6" fill="#fff"/>
+        <path d="M12 15.2V7.5" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      <span>ThermoScope<span class="sub"> · thermal data studio</span></span>
+    </div>
+    <nav id="menus" style="display:flex;gap:2px"></nav>
+    <div class="spacer"></div>
+    <div class="status-chip" id="folderChip">No data loaded</div>
+    <button class="btn ghost icon" id="themeBtn" title="Toggle light / dark"></button>
+  </header>
+
+  <!-- ============================ TOOLBAR ============================ -->
+  <div class="toolbar" id="toolbar">
+    <div class="group">
+      <button class="btn primary" id="openFolderBtn"><span class="ic"></span> Open Data Folder</button>
+      <button class="btn" id="organizeBtn" disabled><span class="ic"></span> Organize &amp; Export</button>
+    </div>
+    <div class="divider"></div>
+    <div class="group" id="undoGroup">
+      <button class="btn icon" id="undoBtn" title="Undo (Ctrl+Z)" disabled></button>
+      <button class="btn icon" id="redoBtn" title="Redo (Ctrl+Y)" disabled></button>
+    </div>
+    <div class="divider"></div>
+    <div class="group">
+      <button class="btn" id="exportPngBtn" disabled><span class="ic"></span> PNG</button>
+      <button class="btn" id="exportSvgBtn" disabled><span class="ic"></span> SVG</button>
+    </div>
+    <div class="spacer" style="flex:1"></div>
+    <div class="group">
+      <button class="btn ghost icon" id="toggleLeftBtn" title="Toggle data panel"></button>
+      <button class="btn ghost icon" id="toggleRightBtn" title="Toggle analysis panel"></button>
+    </div>
+  </div>
+
+  <!-- ============================ WORKSPACE ============================ -->
+  <div class="workspace">
+    <aside class="panel panel-left" id="panelLeft">
+      <div class="panel-scroll" id="leftScroll"></div>
+    </aside>
+
+    <div class="center">
+      <div class="tabs" id="tabs">
+        <button class="tab on" data-tab="chart">Graph</button>
+        <button class="tab" data-tab="raw">Raw Data</button>
+        <button class="tab" data-tab="details">Details</button>
+      </div>
+      <div class="tab-body">
+        <!-- CHART -->
+        <section class="tab-pane on" data-pane="chart">
+          <div class="chart-toolbar" id="chartToolbar"></div>
+          <div class="chart-stage">
+            <div class="chart-wrap" id="chartWrap">
+              <canvas id="chart"></canvas>
+              <div class="empty" id="chartEmpty">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg>
+                <h3>No data to graph yet</h3>
+                <p>Open a folder of DAQami <code>.csv</code> exports to begin. Files are grouped automatically by their <b>E#T#</b> names.</p>
+                <button class="btn primary" id="openFolderBtn2">Open Data Folder</button>
+              </div>
+            </div>
+            <div class="y-pan"><input type="range" class="slider" id="yPan" min="0" max="1000" value="500" disabled></div>
+          </div>
+          <div class="x-pan-row">
+            <span class="zoom-hint" id="zoomHint">Scroll: zoom · Ctrl+scroll: X · Alt+scroll: Y · drag: pan</span>
+            <input type="range" class="slider" id="xPan" min="0" max="1000" value="500" disabled>
+          </div>
+        </section>
+        <!-- RAW -->
+        <section class="tab-pane" data-pane="raw">
+          <div class="raw-wrap" id="rawWrap"></div>
+        </section>
+        <!-- DETAILS -->
+        <section class="tab-pane" data-pane="details">
+          <div class="details-wrap" id="detailsWrap"></div>
+        </section>
+      </div>
+    </div>
+
+    <aside class="panel panel-right" id="panelRight">
+      <div class="panel-scroll" id="rightScroll"></div>
+    </aside>
+  </div>
+
+  <!-- ============================ STATUS BAR ============================ -->
+  <footer class="statusbar" id="statusbar">
+    <div class="sb-item" id="sbMode"></div>
+    <div class="sb-item" id="sbHover"></div>
+    <div class="sb-spacer"></div>
+    <div class="sb-item" id="sbCount"></div>
+  </footer>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+<div class="overlay" id="overlay"></div>
+<div class="toast-host" id="toastHost"></div>
+<input type="file" id="folderInput" webkitdirectory directory multiple style="display:none">
+
+<script src="src/theme.js?v=1"></script>
+<script src="src/parser.js?v=1"></script>
+<script src="src/datamodel.js?v=1"></script>
+<script src="src/analysis.js?v=1"></script>
+<script src="src/organizer.js?v=1"></script>
+<script src="src/renderer.js?v=1"></script>
+<script src="src/chartview.js?v=1"></script>
+<script src="src/store.js?v=1"></script>
+<script src="src/icons.js?v=1"></script>
+<script src="src/main.js?v=1"></script>
+</body>
+</html>
