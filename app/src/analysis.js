@@ -263,7 +263,64 @@
     return { xs: xs, ys: ys, coverage: coverage };
   }
 
+  /* Aggregate several series onto a common grid with a chosen statistic:
+   * 'mean' | 'median' | 'mode' | 'stddev' (sample). Interpolates each series
+   * within its own range, then aggregates the contributing values per point. */
+  function aggregate(vals, kind) {
+    var n = vals.length;
+    if (n === 0) return NaN;
+    if (kind === 'median') {
+      var s = vals.slice().sort(function (a, b) { return a - b; });
+      var m = n >> 1;
+      return n % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+    }
+    if (kind === 'stddev') {
+      if (n < 2) return 0;
+      var mu = 0, i; for (i = 0; i < n; i++) mu += vals[i]; mu /= n;
+      var ss = 0; for (i = 0; i < n; i++) ss += (vals[i] - mu) * (vals[i] - mu);
+      return Math.sqrt(ss / (n - 1));
+    }
+    if (kind === 'mode') {
+      // continuous data: bin to 0.1, take the most-populated bin, return the
+      // mean of the values in it (falls back to the median for ties).
+      var bins = {}, bestKey = null, bestCount = 0;
+      for (var j = 0; j < n; j++) {
+        var key = Math.round(vals[j] * 10);
+        var b = bins[key] || (bins[key] = { sum: 0, c: 0 });
+        b.sum += vals[j]; b.c++;
+        if (b.c > bestCount) { bestCount = b.c; bestKey = key; }
+      }
+      return bestCount <= 1 ? aggregate(vals, 'median') : bins[bestKey].sum / bins[bestKey].c;
+    }
+    var sum = 0; for (var q = 0; q < n; q++) sum += vals[q]; return sum / n; // mean
+  }
+  function aggregateSeries(series, kind) {
+    var valid = series.filter(function (s) { return s.xs && s.xs.length > 0; });
+    if (valid.length === 0) return { xs: new Float64Array(0), ys: new Float64Array(0) };
+    var lo = Infinity, hi = -Infinity, minStep = Infinity;
+    valid.forEach(function (s) {
+      lo = Math.min(lo, s.xs[0]); hi = Math.max(hi, s.xs[s.xs.length - 1]);
+      if (s.xs.length > 1) minStep = Math.min(minStep, (s.xs[s.xs.length - 1] - s.xs[0]) / (s.xs.length - 1));
+    });
+    if (!isFinite(minStep) || minStep <= 0) minStep = (hi - lo) / 200 || 1;
+    var steps = Math.min(20000, Math.max(2, Math.round((hi - lo) / minStep) + 1));
+    var xs = new Float64Array(steps), ys = new Float64Array(steps);
+    for (var k = 0; k < steps; k++) {
+      var x = lo + (hi - lo) * (k / (steps - 1)); xs[k] = x;
+      var vals = [];
+      for (var s = 0; s < valid.length; s++) {
+        var ser = valid[s];
+        if (x < ser.xs[0] || x > ser.xs[ser.xs.length - 1]) continue;
+        var v = linearInterp(ser.xs, ser.ys, x);
+        if (!isNaN(v)) vals.push(v);
+      }
+      ys[k] = vals.length ? aggregate(vals, kind) : NaN;
+    }
+    return { xs: xs, ys: ys };
+  }
+
   TS.Analysis = {
+    aggregateSeries: aggregateSeries,
     floorIndex: floorIndex,
     nearestIndex: nearestIndex,
     linearInterp: linearInterp,

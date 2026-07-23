@@ -20,8 +20,10 @@
 
   function freshGraph() {
     return {
+      name: null,             // custom graph name (null = auto-generated)
       manualPoints: [], manualLines: [],
-      average: null,          // null | { on:true }
+      stats: [],              // [{ id, kind:'mean'|'median'|'mode'|'stddev', datasetIds:[...], color }]
+      statPick: null,         // remembered dataset selection for the Statistics tool
       bestFit: [], bestFitDomain: freshDomain(),   // [datasetId,...]
       minmax: [], minmaxDomain: freshDomain(),     // [datasetId,...]
       areas: [], areaDomain: freshDomain(),        // [datasetId,...]

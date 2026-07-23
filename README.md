@@ -7,8 +7,6 @@ It reads the `.csv` files DAQami exports (grouped automatically by their `E#T#`
 names), turns them into an Excel-ready organized workbook, and gives you an
 interactive graphing/analysis workspace with publication-quality export.
 
-Developed with Claude Opus 4.8
-
 ---
 
 ## Running it

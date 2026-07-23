@@ -390,6 +390,22 @@ table.data-table tr:hover td.idx, table.data-table tr:hover td.time { background
 .cust-item:hover { background: var(--surface-2); }
 .cust-avg { color: var(--text-2); font-style: italic; }
 
+/* floating context menu (chart right-click on a selection) */
+.ctx-menu { position: fixed; display: block; z-index: 400; min-width: 200px; }
+.menu-row.danger { color: var(--danger); }
+.menu-row.danger:hover { background: var(--danger); color: #fff; }
+
+/* editable graph name in the chart toolbar */
+.chart-toolbar .lbl.chart-name { text-transform: none; font-size: var(--fs-sm); color: var(--text-2); font-weight: 600;
+  letter-spacing: 0; cursor: text; padding: 3px 7px; border-radius: var(--r-sm); border: 1px solid transparent; max-width: 340px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chart-toolbar .lbl.chart-name:hover { background: var(--surface-3); border-color: var(--border-2); }
+.chart-name-input { height: 27px; min-width: 220px; max-width: 360px; background: var(--sunken); border: 1px solid var(--accent);
+  border-radius: var(--r-sm); padding: 0 8px; color: var(--text); font-size: var(--fs-sm); font-weight: 600; outline: none; box-shadow: 0 0 0 3px var(--accent-weak); }
+
+/* hollow swatch: a custom item that isn't graphed yet has no assigned colour */
+.tt-swatch.hollow { background: transparent; border: 1px dashed var(--text-3); box-shadow: none; }
+
 .split { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .pill { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--text-2); background: var(--surface-3); border-radius: 20px; padding: 3px 10px; }
 .tag-warn { color: #9a6b00; }

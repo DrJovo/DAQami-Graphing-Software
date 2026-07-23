@@ -324,11 +324,15 @@
       if (started) { rd.lineTo(lastX, sy.toPixel(0)); rd.closePath(); rd.fillPath({ color: a.color, alpha: 0.16 }); }
     });
 
-    // data series
+    // data series (with ctrl-click selection emphasis / dimming)
     series.forEach(function (s) {
       if (s.visibility === 'off') return;
-      var alpha = s.visibility === 'dim' ? 0.32 : 1;
-      drawSeries(rd, s, sx, sy, plot, v, alpha);
+      var alpha = s.visibility === 'dim' ? 0.32 : 1, emphasize = false;
+      if (scene.hasSelection) {
+        if (scene.selection && scene.selection[s.id]) { alpha = 1; emphasize = true; }
+        else { alpha = 0.14; }
+      }
+      drawSeries(rd, s, sx, sy, plot, v, alpha, emphasize, T);
     });
 
     // average lines
@@ -477,16 +481,18 @@
     return res;
   }
 
-  function drawSeries(rd, s, sx, sy, plot, v, alpha) {
+  function drawSeries(rd, s, sx, sy, plot, v, alpha, emphasize, T) {
     var xs = s.xs, ys = s.ys;
     if (!xs || xs.length === 0) return;
     var idx = renderIndices(xs, v.xMin, v.xMax, plot.w);
+    var baseW = s.lineWidth || 1.8;
     if (s.plotType === 'scatter') {
-      var size = s.markerSize || 3;
+      var size = (s.markerSize || 3) * (emphasize ? 1.5 : 1);
       for (var i = 0; i < idx.length; i++) {
         var j = idx[i];
         if (isNaN(ys[j]) || isNaN(xs[j])) continue;
         var px = sx.toPixel(xs[j]), py = sy.toPixel(ys[j]);
+        if (emphasize && T) drawMarker(rd, s.shape || 'circle', px, py, size + 1.8, { color: T.surface, alpha: 1 });
         drawMarker(rd, s.shape || 'circle', px, py, size, { color: s.color, alpha: alpha });
       }
     } else {
@@ -498,7 +504,8 @@
         var x = sx.toPixel(xs[m]), y = sy.toPixel(ys[m]);
         if (!pen) { rd.moveTo(x, y); pen = true; } else rd.lineTo(x, y);
       }
-      rd.strokePath({ color: s.color, width: s.lineWidth || 1.8, alpha: alpha });
+      if (emphasize && T) rd.strokePath({ color: T.surface, width: baseW * 2.6 + 2, alpha: 0.85 }); // casing halo
+      rd.strokePath({ color: s.color, width: emphasize ? baseW * 1.9 : baseW, alpha: alpha });
     }
   }
 

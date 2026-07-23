@@ -117,6 +117,26 @@
       window.addEventListener('mouseup', function (e) { self._onUp(e); });
       cv.addEventListener('mouseleave', function () { if (!self._drag) { self._hover = null; self.render(); if (self.opts.onHoverEnd) self.opts.onHoverEnd(); } });
       cv.addEventListener('dblclick', function (e) { self._onDblClick(e); });
+      cv.addEventListener('contextmenu', function (e) {
+        e.preventDefault();
+        var p = self._rel(e);
+        if (self._inPlot(p) && self.opts.onContextMenu) self.opts.onContextMenu(e.clientX, e.clientY, self._hitSeries(p));
+      });
+    },
+
+    /* nearest series to a pixel (by id) within a small radius, or null */
+    _hitSeries: function (p) {
+      var L = this._layout, scene = this._scene; if (!L || !L.sx || !scene) return null;
+      var time = L.sx.toData(p.x), best = null, bestDist = Infinity;
+      (scene.series || []).forEach(function (s) {
+        if (s.visibility === 'off' || !s.xs || !s.xs.length) return;
+        var idx = A.nearestIndex(s.xs, time), val = s.ys[idx];
+        if (isNaN(val)) return;
+        var dpx = L.sx.toPixel(s.xs[idx]) - p.x, dpy = L.sy.toPixel(val) - p.y;
+        var d = Math.sqrt(dpx * dpx + dpy * dpy);
+        if (d < bestDist) { bestDist = d; best = s.id; }
+      });
+      return bestDist <= 12 ? best : null;
     },
 
     _rel: function (e) {
@@ -161,13 +181,15 @@
     },
 
     _onDown: function (e) {
+      if (e.button !== 0) return;    // left button only (right = context menu)
       var p = this._rel(e);
       if (!this._inPlot(p) || !this._layout.sx) return;
       // hit-test manual points for dragging
       var hit = this._hitManualPoint(p);
       if (hit) { this._drag = { type: 'point', id: hit.id }; this.canvas.style.cursor = 'grabbing'; return; }
-      this._drag = { type: 'pan', startX: p.x, startY: p.y, view: Object.assign({}, this.view) };
-      this.canvas.style.cursor = 'grabbing';
+      this._down = { x: p.x, y: p.y, ctrl: e.ctrlKey || e.metaKey, moved: false };
+      // ctrl+click is a selection gesture, so it must not pan
+      if (!this._down.ctrl) { this._drag = { type: 'pan', startX: p.x, startY: p.y, view: Object.assign({}, this.view) }; this.canvas.style.cursor = 'grabbing'; }
     },
     _hitManualPoint: function (p) {
       var L = this._layout, pts = this._scene && this._scene.overlays && this._scene.overlays.manualPoints;
@@ -180,6 +202,7 @@
     },
     _onMove: function (e) {
       var p = this._rel(e);
+      if (this._down && !this._down.moved && (Math.abs(p.x - this._down.x) > 3 || Math.abs(p.y - this._down.y) > 3)) this._down.moved = true;
       if (this._drag) {
         if (this._drag.type === 'pan') {
           var L = this._layout;
@@ -218,6 +241,10 @@
         if (wasPoint && this.opts.onManualPointDrop) this.opts.onManualPointDrop();
         else if (this.opts.onViewChange) this.opts.onViewChange();
       }
+      if (this._down && !this._down.moved && this.opts.onSeriesClick) {
+        this.opts.onSeriesClick(this._hitSeries({ x: this._down.x, y: this._down.y }), { ctrl: this._down.ctrl });
+      }
+      this._down = null;
     },
     _onDblClick: function (e) {
       var p = this._rel(e);

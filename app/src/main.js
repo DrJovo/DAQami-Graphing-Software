@@ -12,6 +12,86 @@
   var els = {};
   var currentTab = 'chart';
   var rawPage = 0, rawTrialId = null;
+  var selection = {};        // series id -> true (transient chart selection, not saved)
+  var selectionKey = null;   // the graphKey the current selection belongs to
+  function hasSelection() { for (var k in selection) if (selection[k]) return true; return false; }
+  function selectedIds() { return Object.keys(selection).filter(function (k) { return selection[k]; }); }
+  function clearSelection() { selection = {}; if (view) view.render(); updateStatusCounts(); }
+
+  function onSeriesClick(id, mods) {
+    if (mods && mods.ctrl) { if (id) { if (selection[id]) delete selection[id]; else selection[id] = true; } }
+    else { selection = {}; if (id) selection[id] = true; }
+    selectionKey = store.graphKey();
+    if (view) view.render();
+    updateStatusCounts();
+  }
+  function updateStatusCounts() {
+    if (noData()) { els.sbCount.textContent = ''; return; }
+    var n = selectedIds().length;
+    els.sbCount.textContent = n ? (n + ' selected · right-click for actions') : (graphSeries().length + ' series');
+  }
+  var _floatMenu = null;
+  function showFloatingMenu(x, y, items) {
+    closeFloatingMenu();
+    var menu = el('div', { class: 'menu-dropdown ctx-menu' });
+    items.forEach(function (it) {
+      if (it.sep) { menu.appendChild(el('div', { class: 'menu-sep' })); return; }
+      var row = el('button', { class: 'menu-row' + (it.danger ? ' danger' : '') }, [
+        el('span', { class: 'check', html: it.icon || '' }), el('span', { text: it.label }),
+      ]);
+      row.addEventListener('click', function (e) { e.stopPropagation(); closeFloatingMenu(); it.action(); });
+      menu.appendChild(row);
+    });
+    document.body.appendChild(menu);
+    var mw = menu.offsetWidth, mh = menu.offsetHeight;
+    menu.style.left = Math.max(6, Math.min(x, window.innerWidth - mw - 8)) + 'px';
+    menu.style.top = Math.max(6, Math.min(y, window.innerHeight - mh - 8)) + 'px';
+    _floatMenu = menu;
+    setTimeout(function () { document.addEventListener('mousedown', _floatOutside); document.addEventListener('keydown', _escFloat); }, 0);
+  }
+  function closeFloatingMenu() {
+    if (!_floatMenu) return;
+    _floatMenu.remove(); _floatMenu = null;
+    document.removeEventListener('mousedown', _floatOutside); document.removeEventListener('keydown', _escFloat);
+  }
+  function _floatOutside(e) { if (_floatMenu && !_floatMenu.contains(e.target)) closeFloatingMenu(); }
+  function _escFloat(e) { if (e.key === 'Escape') closeFloatingMenu(); }
+
+  function onChartContextMenu(clientX, clientY, hitId) {
+    // right-clicking a series with nothing selected selects it first
+    if (!hasSelection() && hitId) { selection = {}; selection[hitId] = true; selectionKey = store.graphKey(); if (view) view.render(); updateStatusCounts(); }
+    if (!hasSelection()) return;
+    var ids = selectedIds();
+    var isCustom = store.state.graphMode === 'COMPARE_EXP';
+    var items = [
+      { label: 'Average of selected', icon: Icons.avg, action: function () { addStat('mean', ids); openTool('aggregate'); } },
+      { label: 'Median of selected', action: function () { addStat('median', ids); openTool('aggregate'); } },
+      { label: 'Std dev of selected', action: function () { addStat('stddev', ids); openTool('aggregate'); } },
+      { sep: 1 },
+      { label: isCustom ? 'Remove selected from graph' : 'Hide selected', icon: Icons.eyeOff, action: function () { setSelectionVisibility('off'); } },
+    ];
+    if (!isCustom) {
+      items.push({ label: 'Dim selected', icon: Icons.eyeDim, action: function () { setSelectionVisibility('dim'); } });
+      items.push({ label: 'Show all series', icon: Icons.eye, action: function () { showAllSeries(); } });
+    }
+    items.push({ sep: 1 });
+    items.push({ label: 'Clear selection', action: function () { clearSelection(); } });
+    showFloatingMenu(clientX, clientY, items);
+  }
+  function setSelectionVisibility(vis) {
+    var ids = selectedIds();
+    if (store.state.graphMode === 'COMPARE_EXP') {
+      if (vis === 'off') {
+        var keys = ids.map(function (id) { return id.replace(/^CUST_/, ''); });
+        customState().selected = customState().selected.filter(function (k) { return keys.indexOf(k) < 0; });
+      }
+    } else {
+      ids.forEach(function (id) { store.style(id).visibility = vis; });
+    }
+    selection = {};
+    store.commit('vis-selection');
+  }
+  function showAllSeries() { store.currentDatasetIds().forEach(function (id) { store.style(id).visibility = 'on'; }); store.commit('show-all'); }
 
   /* ---- app-level preferences (persisted on this computer, separate from the
    * workspace/undo/session) ---- */
@@ -341,7 +421,7 @@
         { label: 'Set Axis Bounds…', action: setBoundsDialog, disabled: noData },
       ] },
       { name: 'Analysis', items: [
-        { label: 'Average of Graphed Data', action: function () { toggleAverage(); }, checked: function () { return !!store.graph().average; }, disabled: noData },
+        { label: 'Add Average of Graphed Data', action: function () { addStat('mean', graphSeries().map(function (m) { return m.id; })); openTool('aggregate'); }, disabled: noData },
         { label: 'Manual Plotting…', action: function () { openTool('manual'); }, disabled: noData },
         { label: 'Dual-Cursor Measure', action: function () { openTool('cursor'); }, disabled: noData },
         { label: 'Threshold Crossing…', action: function () { openTool('threshold'); }, disabled: noData },
@@ -552,10 +632,15 @@
     var ov = { averageLines: [], bestFit: [], minmax: [], areas: [], manualPoints: [], manualLines: [], cursors: [], thresholds: [] };
     var visible = series.filter(function (s) { return s.visibility !== 'off' && s.xs && s.xs.length; });
 
-    if (g.average) {
-      var avg = Analysis.averageSeries(visible.map(function (s) { return { xs: s.xs, ys: s.ys }; }));
-      ov.averageLines.push({ xs: avg.xs, ys: avg.ys, color: avgHex(), label: 'Average' });
-    }
+    (g.stats || []).forEach(function (stat) {
+      var chosen = stat.datasetIds && stat.datasetIds.length
+        ? series.filter(function (s) { return stat.datasetIds.indexOf(s.id) >= 0 && s.visibility !== 'off' && s.xs && s.xs.length; })
+        : visible;
+      if (!chosen.length) return;
+      var agg = Analysis.aggregateSeries(chosen.map(function (s) { return { xs: s.xs, ys: s.ys }; }), stat.kind);
+      ov.averageLines.push({ xs: agg.xs, ys: agg.ys, color: stat.color, label: statLabel(stat, chosen.length),
+        id: stat.id, dash: stat.kind === 'stddev' ? [6, 4] : (stat.kind === 'mode' ? [2, 3] : []) });
+    });
     var meta = graphMetaMap();
     g.bestFit.forEach(function (id) {
       var m = meta[id]; if (!m) return;
@@ -596,17 +681,28 @@
     return ov;
   }
 
-  function chartTitle() {
+  /* ---- statistics overlays (mean/median/mode/std-dev lines) ---- */
+  var STAT_NAMES = { mean: 'Mean', median: 'Median', mode: 'Mode', stddev: 'Std Dev' };
+  // Vivid mid-tones that stay legible on both light and dark surfaces, so a stat
+  // line never disappears when the theme is switched after it was created.
+  var STAT_COLORS = ['#7c3aed', '#0891b2', '#ca8a04', '#dc2626', '#16a34a', '#db2777'];
+  function statLabel(stat, count) { return (STAT_NAMES[stat.kind] || stat.kind) + ' · ' + count; }
+  function nextStatColor(g) { return STAT_COLORS[g.stats.length % STAT_COLORS.length]; }
+  function addStat(kind, ids) {
+    var g = store.graph();
+    g.stats.push({ id: store.uid('st'), kind: kind, datasetIds: (ids || []).slice(), color: nextStatColor(g) });
+    store.commit('stat-add');
+  }
+
+  function autoChartTitle() {
     var s = store.state;
-    if (s.graphMode === 'COMPARE_EXP') {
-      var n = customState().selected.length;
-      return 'Custom comparison · ' + n + ' series';
-    }
+    if (s.graphMode === 'COMPARE_EXP') { return 'Custom comparison · ' + customState().selected.length + ' series'; }
     var pre = 'Experiment ' + s.currentExperiment + ' · ';
     if (s.graphMode === 'BY_SENSOR') return pre + (s.modeSelector.BY_SENSOR || '') + ' across all trials';
     if (s.graphMode === 'BY_TRIAL') return pre + 'Trial ' + s.modeSelector.BY_TRIAL + ', all sensors';
     return pre + 'full overview';
   }
+  function chartTitle() { var g = store.graph(); return (g && g.name) || autoChartTitle(); }
   function yAxisLabel() {
     var series = seriesForCurrentGraph();
     var unit = null;
@@ -621,6 +717,7 @@
       theme: chartColors(), series: series, overlays: computeOverlays(series, g),
       boundaries: computeBoundaries(), trialWindow: trialWindow(),
       grid: store.state.showGrid, legend: store.state.legend,
+      selection: selection, hasSelection: hasSelection(),
       title: chartTitle(), xLabel: 'Time (s)', yLabel: yAxisLabel(),
     };
   }
@@ -723,7 +820,10 @@
   /* Custom overlay builder: presets + per-experiment checkbox groups. */
   function buildCustomOverlay(body) {
     var sel = customState().selected, selSet = {};
-    sel.forEach(function (k) { selSet[k] = 1; });
+    // The graph colours a custom series by its position in the selection, so mirror
+    // that here (colorByKey) — the picker swatch then matches the plotted line.
+    var colorByKey = {};
+    sel.forEach(function (k, i) { selSet[k] = 1; colorByKey[k] = Theme.seriesColor(store.state.theme, i); });
     var sensors = allSensorNames();
     var single = sensors.length <= 1;
 
@@ -766,13 +866,13 @@
       exp.trials.forEach(function (tr) {
         tr.channels.forEach(function (ch) {
           var key = 'R|E' + exp.number + '|T' + tr.trial + '|' + ch.name;
-          wrap.appendChild(customCheck(key, single ? 'Trial ' + tr.trial : 'Trial ' + tr.trial + ' · ' + ch.name, !!selSet[key], store.resolveColor(DataModel.datasetId(exp.number, tr.trial, ch.name))));
+          wrap.appendChild(customCheck(key, single ? 'Trial ' + tr.trial : 'Trial ' + tr.trial + ' · ' + ch.name, !!selSet[key], colorByKey[key] || null));
         });
       });
       // per-experiment averages
       exp.channelNames.forEach(function (n) {
         var key = 'A|E' + exp.number + '|' + n;
-        wrap.appendChild(customCheck(key, single ? 'Average (all trials)' : 'Average · ' + n, !!selSet[key], null, true));
+        wrap.appendChild(customCheck(key, single ? 'Average (all trials)' : 'Average · ' + n, !!selSet[key], colorByKey[key] || null, true));
       });
       body.appendChild(wrap);
     });
@@ -780,10 +880,10 @@
   function customCheck(key, label, on, swatchColor, isAvg) {
     var cb = el('input', { type: 'checkbox' }); cb.checked = on;
     cb.addEventListener('change', function () { toggleCustom(key, cb.checked); });
-    var kids = [cb, el('span', { class: 'box', html: Icons.check })];
-    if (swatchColor) kids.push(el('span', { class: 'tt-swatch', style: 'background:' + swatchColor }));
-    kids.push(el('span', { class: isAvg ? 'cust-avg' : '', text: label }));
-    return el('label', { class: 'chk cust-item', style: 'padding:5px 4px' }, kids);
+    var sw = swatchColor ? el('span', { class: 'tt-swatch', style: 'background:' + swatchColor })
+      : el('span', { class: 'tt-swatch hollow' });   // not graphed yet -> no colour
+    return el('label', { class: 'chk cust-item', style: 'padding:5px 4px' },
+      [cb, el('span', { class: 'box', html: Icons.check }), sw, el('span', { class: isAvg ? 'cust-avg' : '', text: label })]);
   }
 
   var sectionOpen = {}; // remembered across re-renders so panels don't re-expand
@@ -819,9 +919,8 @@
       el('button', { class: 'btn sm', html: Icons.clear + ' Clear all', onclick: clearAnalysis }),
     ]));
 
-    tool(host, 'average', Icons.avg, 'Average', !!g.average, function (body) {
-      body.appendChild(el('p', { class: 'hint', text: 'Interpolates the graphed series onto a shared time grid and plots their mean. Hover the line for time, temp, and rate.' }));
-      body.appendChild(el('label', { class: 'chk', style: 'margin-top:10px' }, buildToggle(!!g.average, function (on) { g.average = on ? { on: true } : null; store.commit('average'); }, 'Show average line')));
+    tool(host, 'aggregate', Icons.avg, 'Statistics', g.stats.length > 0, function (body) {
+      body.appendChild(statisticsEditor(g));
     });
 
     tool(host, 'stats', Icons.minmax, 'Min / Max / Mean', g.minmax.length > 0, function (body) {
@@ -909,6 +1008,34 @@
       sp.appendChild(numField('From (s)', dom.xMin != null ? dom.xMin : '', function (val) { dom.xMin = val; onLive(); }, onCommit));
       sp.appendChild(numField('To (s)', dom.xMax != null ? dom.xMax : '', function (val) { dom.xMax = val; onLive(); }, onCommit));
       wrap.appendChild(sp);
+    }
+    return wrap;
+  }
+
+  function statisticsEditor(g) {
+    var wrap = el('div', {});
+    wrap.appendChild(el('p', { class: 'hint', text: 'Plot the mean, median, mode, or standard deviation across chosen datasets. Add as many as you like; hover a line for its value.' }));
+    var allIds = graphSeries().map(function (m) { return m.id; });
+    if (g.statPick == null) g.statPick = allIds.slice();
+    g.statPick = g.statPick.filter(function (id) { return allIds.indexOf(id) >= 0; });
+    wrap.appendChild(datasetPicker('Compute across', g.statPick, function (ids) { g.statPick = ids; renderRight(); }));
+    var addRow = el('div', { class: 'row wrap', style: 'gap:6px;margin-top:8px' });
+    [['mean', 'Mean'], ['median', 'Median'], ['mode', 'Mode'], ['stddev', 'Std Dev']].forEach(function (k) {
+      addRow.appendChild(el('button', { class: 'btn sm', html: Icons.plus + ' ' + k[1], title: 'Graph a ' + k[1] + ' line over the selected datasets',
+        onclick: function () { if (!g.statPick.length) { toast('Select at least one dataset'); return; } addStat(k[0], g.statPick); } }));
+    });
+    wrap.appendChild(addRow);
+    if (g.stats.length) {
+      wrap.appendChild(capLabel('Graphed statistics', 14));
+      var list = el('div', {});
+      g.stats.forEach(function (stat) {
+        var sw = el('button', { class: 'swatch', style: 'background:' + stat.color });
+        sw.addEventListener('click', function () { openColorPicker(sw, stat.color, function (h, done) { stat.color = h; sw.style.background = h; view.render(); if (done) store.commit('stat-color'); }); });
+        var del = el('button', { class: 'mini', title: 'Remove', html: Icons.trash, onclick: function () { g.stats = g.stats.filter(function (x) { return x !== stat; }); store.commit('stat-del'); } });
+        var count = stat.datasetIds && stat.datasetIds.length ? stat.datasetIds.length + ' datasets' : 'all graphed';
+        list.appendChild(el('div', { class: 'mp-entry' }, [sw, el('span', { class: 'mp-expr', text: (STAT_NAMES[stat.kind] || stat.kind) + ' of ' + count }), del]));
+      });
+      wrap.appendChild(list);
     }
     return wrap;
   }
@@ -1163,7 +1290,6 @@
   }
 
   /* ============================ ACTIONS ================================= */
-  function toggleAverage() { var g = store.graph(); g.average = g.average ? null : { on: true }; store.commit('average'); }
   function clearAnalysis() {
     var k = store.graphKey();
     store.state.graphs[k] = TS.freshGraph();
@@ -1332,7 +1458,27 @@
     host.appendChild(el('button', { class: 'btn sm' + (s.showGrid.minor ? ' active' : ''), title: 'Minor gridlines', text: 'Minor', onclick: function () { s.showGrid.minor = !s.showGrid.minor; store.commit('grid'); } }));
     host.appendChild(el('button', { class: 'btn sm' + (s.legend ? ' active' : ''), title: 'Legend', text: 'Legend', onclick: function () { s.legend = !s.legend; store.commit('legend'); } }));
     host.appendChild(el('div', { style: 'flex:1' }));
-    host.appendChild(el('span', { class: 'lbl', text: chartTitle() }));
+    var titleEl = el('span', { class: 'lbl chart-name', title: 'Click to rename this graph', text: chartTitle() });
+    titleEl.addEventListener('click', function () { editGraphName(titleEl); });
+    host.appendChild(titleEl);
+  }
+  function editGraphName(spanEl) {
+    var g = store.graph();
+    var input = el('input', { class: 'chart-name-input', value: chartTitle() });
+    spanEl.replaceWith(input);
+    input.focus(); input.select();
+    var done = false;
+    function commit() {
+      if (done) return; done = true;
+      var v = input.value.trim();
+      g.name = (v === '' || v === autoChartTitle()) ? null : v;  // empty or unchanged-from-auto -> revert
+      store.commit('rename');   // re-renders toolbar (span back) + chart title
+    }
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { commit(); }
+      else if (e.key === 'Escape') { done = true; renderChartToolbar(); }
+    });
+    input.addEventListener('blur', commit);
   }
 
   /* ============================ TABS =================================== */
@@ -1709,14 +1855,16 @@
     applyAppearance();
     els.themeBtn.innerHTML = store.state.theme === 'dark' ? Icons.sun : Icons.moon;
     var nd = noData();
+    var gk = nd ? null : store.graphKey();
+    if (gk !== selectionKey) { selection = {}; selectionKey = gk; }   // reset selection when the graph changes
     els.folderChip.textContent = nd ? 'No data loaded' : (store.data.folderName + ' · ' + store.data.experiments.length + ' exp · ' + store.data.parsedTrials.length + ' files');
     ['organizeBtn', 'exportPngBtn', 'exportSvgBtn'].forEach(function (id) { els[id].disabled = nd; });
     els.undoBtn.disabled = !store.canUndo(); els.redoBtn.disabled = !store.canRedo();
     els.chartEmpty.style.display = nd ? 'flex' : 'none';
     if (!nd) els.sbMode.innerHTML = '<b>' + (store.state.graphMode === 'COMPARE_EXP' ? 'Custom' : DataModel.MODES[store.state.graphMode].label) + '</b>';
     else els.sbMode.innerHTML = '';
-    els.sbCount.textContent = nd ? '' : (buildScene().series.length + ' series shown');
     renderLeft(); renderRight(); renderChartToolbar();
+    updateStatusCounts();
     if (view) { view._resize(); view.setAutoDirty(); view.render(); sizeYPan(); updatePanSliders(); }
     if (currentTab === 'raw') renderRaw();
     if (currentTab === 'details') renderDetails();
@@ -1741,6 +1889,8 @@
       onManualPointMove: function (id, x, y) { var g = store.graph(); g.manualPoints.forEach(function (p) { if (p.id === id) { p.x = x; p.y = y; } }); },
       onManualPointDrop: function () { store.commit('manual-move'); },
       onPlotDblClick: onPlotDblClick,
+      onSeriesClick: onSeriesClick,
+      onContextMenu: onChartContextMenu,
     });
 
     // toolbar buttons
