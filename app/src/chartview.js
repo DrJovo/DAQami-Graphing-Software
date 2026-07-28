@@ -62,6 +62,23 @@
           if (y < yMin) yMin = y; if (y > yMax) yMax = y;
         }
       });
+      // Statistics lines (mean/median/… and the ±SD band) are real plotted data:
+      // include them so auto-scale still frames them when their source traces are
+      // hidden (otherwise the axes collapse to a default 0–1 range).
+      (scene.overlays && scene.overlays.averageLines || []).forEach(function (a) {
+        if (!a.xs || !a.xs.length) return;
+        var lo = 0, hi = a.xs.length - 1;
+        if (useTrialX) {
+          lo = Math.max(0, A.floorIndex(a.xs, scene.trialWindow.x0));
+          hi = A.floorIndex(a.xs, scene.trialWindow.x1); if (hi < 0) hi = a.xs.length - 1; else hi = Math.min(a.xs.length - 1, hi + 1);
+        }
+        for (var i = lo; i <= hi; i++) {
+          var x = a.xs[i], y = a.ys[i];
+          if (isNaN(x) || isNaN(y)) continue;
+          if (x < xMin) xMin = x; if (x > xMax) xMax = x;
+          if (y < yMin) yMin = y; if (y > yMax) yMax = y;
+        }
+      });
       (scene.overlays && scene.overlays.manualPoints || []).forEach(function (p) {
         if (p.x < xMin) xMin = p.x; if (p.x > xMax) xMax = p.x;
         if (p.y < yMin) yMin = p.y; if (p.y > yMax) yMax = p.y;

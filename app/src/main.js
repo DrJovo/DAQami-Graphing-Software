@@ -1877,16 +1877,16 @@
   }
   function guideDialog() {
     modal({ title: 'Features & Tips', wide: true, body:
-      '<div style="line-height:1.65;font-size:13px;color:var(--text-2)">' +
-      '<p><b style="color:var(--text)">Graph modes.</b> Compare one sensor across trials, one trial across sensors, a full overview, or hand-pick anything in <b>Custom</b>. Sensor and trial buttons toggle series on and off quickly.</p>' +
-      '<p style="margin-top:10px"><b style="color:var(--text)">Selecting &amp; highlighting.</b> Ctrl-click a line to select it (Ctrl-click more to add). Selected lines are emphasized and the rest dim; click an empty area to clear. Right-click for quick actions (average the selection, hide, and more).</p>' +
-      '<p style="margin-top:10px"><b style="color:var(--text)">Statistics.</b> Under <b>Statistics</b>, plot the <b>mean, median, mode, standard deviation</b>, or a <b>Mean ± SD</b> band (a mean line with a dotted ±1σ band in the same colour). Each statistic is <b>frozen</b> when added — hiding a source trace afterwards won\'t change it, so you can graph an average and then hide the raw data to declutter. Every statistic is named automatically (e.g. “Mean of Trial 1, Trial 2…”); click its name to rename it.</p>' +
-      '<p style="margin-top:10px"><b style="color:var(--text)">Colours.</b> Each series in a view gets a distinct, professional colour, chosen to stay well-separated even with many datasets. Click any swatch to override a colour.</p>' +
-      '<p style="margin-top:10px"><b style="color:var(--text)">Naming.</b> Anything you can rename shows a small pencil on hover. Click the title on the chart to rename the graph; clear it to return to the automatic name.</p>' +
-      '<p style="margin-top:10px"><b style="color:var(--text)">Other tools.</b> Line of best fit (solid in range, dotted where extrapolated), min/max/mean readouts, area under the curve, smoothing, manual points &amp; lines, dual-cursor measure, and threshold crossings — all per-graph, so switching graphs never mixes them.</p>' +
-      '<p style="margin-top:10px"><b style="color:var(--text)">Units &amp; preferences.</b> Choose Celsius, Fahrenheit, or As Recorded for both the display and CSV export under <b>Settings → Preferences</b>, along with appearance and layout options.</p>' +
-      '<p style="margin-top:10px"><b style="color:var(--text)">Exporting.</b> Save publication-quality PNG or vector SVG, or export the organized data as CSV, from <b>Organize &amp; Export</b>.</p>' +
-      '</div>',
+      '<p class="hint" style="line-height:1.6">A quick tour of what ThermoScope can do:</p>' +
+      '<ul class="hint" style="line-height:1.7;margin-top:8px">' +
+      '<li><b>Graph modes</b> — compare one sensor across trials, one trial across sensors, a full overview, or hand-pick anything in <code>Custom</code>. Sensor and trial buttons toggle series on and off.</li>' +
+      '<li><b>Selecting</b> — <code>Ctrl</code>-click a line to select it (Ctrl-click more to add); the rest dim. Click an empty area to clear, or right-click for quick actions.</li>' +
+      '<li><b>Statistics</b> — plot the mean, median, mode, standard deviation, or a Mean&nbsp;±&nbsp;SD band across chosen datasets. Each line is frozen when added, so hiding a source trace won\'t change it. Statistics are named automatically; click a name to rename it.</li>' +
+      '<li><b>Colours</b> — each series in a view gets a distinct, well-separated colour, even with many datasets. Click any swatch to choose your own.</li>' +
+      '<li><b>Renaming</b> — anything you can rename shows a small pencil on hover. Click the title on the chart to rename the graph; clear it to return to the automatic name.</li>' +
+      '<li><b>More tools</b> — line of best fit, min / max / mean, area under the curve, smoothing, manual points and lines, dual-cursor measure, and threshold crossings, all kept per-graph.</li>' +
+      '<li><b>Units &amp; export</b> — pick Celsius, Fahrenheit, or As&nbsp;Recorded for the display and CSV export under <code>Settings &rsaquo; Preferences</code>. Save PNG or SVG, or export organized CSV, from <code>Organize &amp; Export</code>.</li>' +
+      '</ul>',
       actions: [{ label: 'Close', primary: true }] });
   }
 
