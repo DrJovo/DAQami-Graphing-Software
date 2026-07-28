@@ -256,6 +256,18 @@ input[type=range].slider::-moz-range-thumb { width: 15px; height: 15px; border-r
 .mp-entry .x { color: var(--text-3); }
 .mp-entry .x:hover { color: var(--danger); }
 
+/* Inline click-to-rename control (stat names, chart title). Long text fades out
+ * at the right edge instead of wrapping; a pencil appears on hover. */
+.editable { flex: 1; min-width: 0; display: flex; align-items: center; gap: 5px; cursor: text; border-radius: var(--r-sm); padding: 3px 5px; margin: -3px -3px; }
+.editable:hover { background: var(--surface-2); }
+.editable-text { flex: 1; min-width: 0; font-size: var(--fs-xs); white-space: nowrap; overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, #000 80%, transparent); mask-image: linear-gradient(90deg, #000 80%, transparent); }
+.editable-pencil { flex: 0 0 auto; width: 13px; height: 13px; color: var(--text-3); opacity: 0; transition: opacity .12s; }
+.editable:hover .editable-pencil { opacity: .8; }
+.editable-pencil svg { width: 13px; height: 13px; display: block; }
+.editable-input { flex: 1; min-width: 0; height: 24px; background: var(--sunken); border: 1px solid var(--accent);
+  border-radius: var(--r-sm); padding: 0 6px; color: var(--text); outline: none; font-size: var(--fs-xs); box-shadow: 0 0 0 3px var(--accent-weak); }
+
 /* status bar */
 .statusbar {
   height: 26px; flex: 0 0 auto; display: flex; align-items: center; gap: 14px; padding: 0 12px;
@@ -395,13 +407,16 @@ table.data-table tr:hover td.idx, table.data-table tr:hover td.time { background
 .menu-row.danger { color: var(--danger); }
 .menu-row.danger:hover { background: var(--danger); color: #fff; }
 
-/* editable graph name in the chart toolbar */
-.chart-toolbar .lbl.chart-name { text-transform: none; font-size: var(--fs-sm); color: var(--text-2); font-weight: 600;
-  letter-spacing: 0; cursor: text; padding: 3px 7px; border-radius: var(--r-sm); border: 1px solid transparent; max-width: 340px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chart-toolbar .lbl.chart-name:hover { background: var(--surface-3); border-color: var(--border-2); }
-.chart-name-input { height: 27px; min-width: 220px; max-width: 360px; background: var(--sunken); border: 1px solid var(--accent);
-  border-radius: var(--r-sm); padding: 0 8px; color: var(--text); font-size: var(--fs-sm); font-weight: 600; outline: none; box-shadow: 0 0 0 3px var(--accent-weak); }
+/* On-chart title: transparent hit-area over the renderer-drawn title, so the
+ * title shown on the graph (and in exports) is itself clickable to rename. */
+.chart-title-hit { position: absolute; display: flex; align-items: center; justify-content: flex-end; padding-right: 4px;
+  cursor: text; border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px transparent; transition: box-shadow .12s, background .12s; z-index: 4; }
+.chart-title-hit:hover { background: color-mix(in srgb, var(--surface) 62%, transparent); box-shadow: inset 0 0 0 1px var(--border-2); }
+.chart-title-pencil { width: 13px; height: 13px; color: var(--text-3); opacity: 0; transition: opacity .12s; }
+.chart-title-hit:hover .chart-title-pencil { opacity: .85; }
+.chart-title-pencil svg { width: 13px; height: 13px; display: block; }
+.chart-title-input { position: absolute; z-index: 5; text-align: center; background: var(--surface); border: 1px solid var(--accent);
+  border-radius: var(--r-sm); padding: 0 8px; color: var(--text); font-size: var(--fs-sm); font-weight: 700; outline: none; box-shadow: 0 0 0 3px var(--accent-weak); }
 
 /* hollow swatch: a custom item that isn't graphed yet has no assigned colour */
 .tt-swatch.hollow { background: transparent; border: 1px dashed var(--text-3); box-shadow: none; }

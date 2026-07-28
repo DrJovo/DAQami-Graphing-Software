@@ -22,6 +22,7 @@
     x: svg('<path d="M6 6l12 12M18 6L6 18"/>', { w: 2 }),
     plus: svg('<path d="M12 5v14M5 12h14"/>', { w: 2 }),
     trash: svg('<path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/>'),
+    pencil: svg('<path d="M14.5 5.5l4 4M4 20l1-4L16 5a1.5 1.5 0 0 1 2 0l1 1a1.5 1.5 0 0 1 0 2L8 19z"/>'),
     panelLeft: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>'),
     panelRight: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>'),
     avg: svg('<path d="M3 16c4 0 4-8 8-8s4 8 8 8"/><path d="M3 12h18" stroke-dasharray="3 3"/>'),

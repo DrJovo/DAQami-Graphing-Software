@@ -440,8 +440,9 @@
       ] },
       { name: 'Help', items: [
         { label: 'About ThermoScope', action: aboutDialog },
+        { label: 'Features & Tips', action: guideDialog },
         { label: 'DAQami Format Notes', action: formatDialog },
-        { label: 'Keyboard Shortcuts', action: shortcutsDialog },
+        { label: 'Shortcuts & Interactions', action: shortcutsDialog },
       ] },
     ];
     var host = els.menus; clearNode(host);
@@ -490,15 +491,24 @@
   function graphSeries() {
     var s = store.state;
     if (s.graphMode === 'COMPARE_EXP') return customSeries();
-    return store.currentDatasetIds().map(function (id) {
+    var ids = store.currentDatasetIds();
+    // Distinct colours are assigned by position within THIS graph, sized to the
+    // number of series shown here — so every series in the view gets a different
+    // colour (no cycling collisions), while a user-set custom colour still wins.
+    var pal = Theme.scale(s.theme, ids.length);
+    return ids.map(function (id, i) {
       var d = DataModel.resolveDatasetData(store.data.experiments, id);
       if (!d) return null;
       var st = store.style(id);
-      return { id: id, xs: d.xs, rawYs: convYs(d.ys), unit: displayUnit(d.unit), color: store.resolveColor(id),
+      return { id: id, xs: d.xs, rawYs: convYs(d.ys), unit: displayUnit(d.unit),
+        color: st.customColor || pal[i],
         shape: st.shape, visibility: st.visibility,
         label: DataModel.datasetLabelForMode(store.data.experiments, id, s.graphMode) };
     }).filter(Boolean);
   }
+  /* id -> plotted colour for the current graph (used by side-panel swatches so
+   * they always match the line on the chart). */
+  function graphColorMap() { var m = {}; graphSeries().forEach(function (x) { m[x.id] = x.color; }); return m; }
   function graphMetaMap() { var m = {}; graphSeries().forEach(function (x) { m[x.id] = x; }); return m; }
 
   /* Smoothing is expensive and graphSeries() runs several times per render, so
@@ -574,11 +584,13 @@
     return { xs: avg.xs, ys: avg.ys, unit: unit, label: 'E' + ea + ' avg · ' + sen };
   }
   function customSeries() {
-    var s = store.state, out = [], idx = 0;
-    customState().selected.forEach(function (key) {
+    var s = store.state, out = [];
+    var sel = customState().selected;
+    var pal = Theme.scale(s.theme, sel.length);
+    sel.forEach(function (key, i) {
       var d = customResolve(key); if (!d) return;
       out.push({ id: 'CUST_' + key, xs: d.xs, rawYs: convYs(d.ys), unit: displayUnit(d.unit),
-        color: Theme.seriesColor(s.theme, idx++), shape: 'circle', visibility: 'on', label: d.label });
+        color: pal[i], shape: 'circle', visibility: 'on', label: d.label });
     });
     return out;
   }
@@ -632,14 +644,32 @@
     var ov = { averageLines: [], bestFit: [], minmax: [], areas: [], manualPoints: [], manualLines: [], cursors: [], thresholds: [] };
     var visible = series.filter(function (s) { return s.visibility !== 'off' && s.xs && s.xs.length; });
 
+    var statLabels = null; // built lazily: id -> series label, for default stat names
     (g.stats || []).forEach(function (stat) {
-      var chosen = stat.datasetIds && stat.datasetIds.length
-        ? series.filter(function (s) { return stat.datasetIds.indexOf(s.id) >= 0 && s.visibility !== 'off' && s.xs && s.xs.length; })
-        : visible;
+      // Frozen: compute over the snapshotted datasets regardless of visibility, so
+      // hiding a source series never changes the line.
+      var ids = stat.datasetIds || [];
+      var chosen = ids.length
+        ? series.filter(function (s) { return ids.indexOf(s.id) >= 0 && s.xs && s.xs.length; })
+        : series.filter(function (s) { return s.xs && s.xs.length; });
       if (!chosen.length) return;
-      var agg = Analysis.aggregateSeries(chosen.map(function (s) { return { xs: s.xs, ys: s.ys }; }), stat.kind);
-      ov.averageLines.push({ xs: agg.xs, ys: agg.ys, color: stat.color, label: statLabel(stat, chosen.length),
-        id: stat.id, dash: stat.kind === 'stddev' ? [6, 4] : (stat.kind === 'mode' ? [2, 3] : []) });
+      if (!statLabels) { statLabels = {}; series.forEach(function (s) { statLabels[s.id] = s.label; }); }
+      var pts = chosen.map(function (s) { return { xs: s.xs, ys: s.ys }; });
+      var label = ellipsize(statDisplayName(stat, statLabels), 44);
+      if (stat.kind === 'meanstd') {
+        // Mean (solid) plus ±1 std-dev drawn as a dotted band in the same colour.
+        var meanA = Analysis.aggregateSeries(pts, 'mean');
+        var sdA = Analysis.aggregateSeries(pts, 'stddev');
+        var n = meanA.ys.length, up = new Float64Array(n), lo = new Float64Array(n);
+        for (var i = 0; i < n; i++) { up[i] = meanA.ys[i] + sdA.ys[i]; lo[i] = meanA.ys[i] - sdA.ys[i]; }
+        ov.averageLines.push({ xs: meanA.xs, ys: meanA.ys, color: stat.color, label: label, id: stat.id, dash: [] });
+        ov.averageLines.push({ xs: meanA.xs, ys: up, color: stat.color, label: null, id: stat.id + '_u', dash: [2, 3], width: 1.7, alpha: 0.85 });
+        ov.averageLines.push({ xs: meanA.xs, ys: lo, color: stat.color, label: null, id: stat.id + '_l', dash: [2, 3], width: 1.7, alpha: 0.85 });
+      } else {
+        var agg = Analysis.aggregateSeries(pts, stat.kind);
+        ov.averageLines.push({ xs: agg.xs, ys: agg.ys, color: stat.color, label: label,
+          id: stat.id, dash: stat.kind === 'stddev' ? [6, 4] : (stat.kind === 'mode' ? [2, 3] : []) });
+      }
     });
     var meta = graphMetaMap();
     g.bestFit.forEach(function (id) {
@@ -681,16 +711,29 @@
     return ov;
   }
 
-  /* ---- statistics overlays (mean/median/mode/std-dev lines) ---- */
-  var STAT_NAMES = { mean: 'Mean', median: 'Median', mode: 'Mode', stddev: 'Std Dev' };
+  /* ---- statistics overlays (mean/median/mode/std-dev/mean±sd lines) ---- */
+  var STAT_NAMES = { mean: 'Mean', median: 'Median', mode: 'Mode', stddev: 'Std Dev', meanstd: 'Mean ± SD' };
   // Vivid mid-tones that stay legible on both light and dark surfaces, so a stat
   // line never disappears when the theme is switched after it was created.
   var STAT_COLORS = ['#7c3aed', '#0891b2', '#ca8a04', '#dc2626', '#16a34a', '#db2777'];
-  function statLabel(stat, count) { return (STAT_NAMES[stat.kind] || stat.kind) + ' · ' + count; }
+  function ellipsize(str, n) { return (str && str.length > n) ? str.slice(0, n - 1) + '…' : str; }
+  // Default name for a graphed statistic: "<operation> of <dataset a>, <dataset b>…".
+  // labelById maps a source dataset id to its label in the current graph.
+  function autoStatName(stat, labelById) {
+    var ids = stat.datasetIds || [];
+    var names = ids.map(function (id) { return (labelById && labelById[id]) || id; });
+    return (STAT_NAMES[stat.kind] || stat.kind) + ' of ' + (names.length ? names.join(', ') : 'graphed data');
+  }
+  function statDisplayName(stat, labelById) { return stat.name || autoStatName(stat, labelById); }
+  function statLabelMap() { var m = {}; graphSeries().forEach(function (x) { m[x.id] = x.label; }); return m; }
   function nextStatColor(g) { return STAT_COLORS[g.stats.length % STAT_COLORS.length]; }
   function addStat(kind, ids) {
     var g = store.graph();
-    g.stats.push({ id: store.uid('st'), kind: kind, datasetIds: (ids || []).slice(), color: nextStatColor(g) });
+    // Snapshot the datasets at creation so the statistic is frozen: hiding a source
+    // series afterwards will NOT recompute it. This lets you graph an average and
+    // then hide the raw traces to declutter, without the average shifting.
+    var chosen = (ids && ids.length) ? ids.slice() : graphSeries().map(function (m) { return m.id; });
+    g.stats.push({ id: store.uid('st'), kind: kind, datasetIds: chosen, color: nextStatColor(g), name: null });
     store.commit('stat-add');
   }
 
@@ -723,7 +766,16 @@
   }
 
   /* ============================ LEFT PANEL ============================== */
-  function renderLeft() {
+  /* Rebuilding a side panel wholesale would reset its scroll to the top on every
+   * click. preserveScroll() captures scrollTop, lets the panel rebuild, then
+   * restores it — so toggling visibility, colours, etc. never jumps the view. */
+  function preserveScroll(host, build) {
+    var top = host.scrollTop;
+    build();
+    host.scrollTop = top;
+  }
+  function renderLeft() { preserveScroll(els.leftScroll, _renderLeftInner); }
+  function _renderLeftInner() {
     var host = els.leftScroll; clearNode(host);
     if (noData()) {
       host.appendChild(el('div', { class: 'section-body', html: '<p class="hint" style="padding:16px 2px">Open a data folder to see experiments and series here.</p>' }));
@@ -740,15 +792,15 @@
       }
 
       var modes = [
-        { id: 'BY_SENSOR', title: 'One Sensor · All Trials', sub: 'Pick a sensor; each trial is its own line' },
-        { id: 'BY_TRIAL', title: 'One Trial · All Sensors', sub: 'Pick a trial; each sensor is its own line' },
-        { id: 'ALL', title: 'Full Overview', sub: 'Every sensor of every trial' },
-        { id: 'COMPARE_EXP', title: 'Custom', sub: 'Hand-pick anything to overlay' },
+        { id: 'BY_SENSOR', title: 'One Sensor · All Trials', sub: 'Pick a sensor; each trial is its own line', tip: 'Compare how one sensor behaved across every trial of this experiment — best for repeatability.' },
+        { id: 'BY_TRIAL', title: 'One Trial · All Sensors', sub: 'Pick a trial; each sensor is its own line', tip: 'Compare all sensors within a single trial — best for spatial differences at one run.' },
+        { id: 'ALL', title: 'Full Overview', sub: 'Every sensor of every trial', tip: 'Show every sensor of every trial at once for a complete picture.' },
+        { id: 'COMPARE_EXP', title: 'Custom', sub: 'Hand-pick anything to overlay', tip: 'Hand-pick any trials, sensors, or per-experiment averages — even across experiments — to overlay.' },
       ];
       var list = el('div', { class: 'radio-list' });
       modes.forEach(function (m) {
         list.appendChild(el('div', {
-          class: 'radio-row' + (s.graphMode === m.id ? ' on' : ''),
+          class: 'radio-row' + (s.graphMode === m.id ? ' on' : ''), title: m.tip,
           onclick: function () { s.graphMode = m.id; store._ensureSelectors(); store.commit('mode'); },
         }, [el('span', { class: 'dot' }), el('div', {}, [el('div', { class: 'rl-title', text: m.title }), el('div', { class: 'rl-sub', text: m.sub })])]));
       });
@@ -784,15 +836,17 @@
     if (s.graphMode === 'COMPARE_EXP') return;
     host.appendChild(section('Data Series', function (body) {
       var ids = store.currentDatasetIds();
+      var colorMap = graphColorMap();   // actual plotted colours (position-based + overrides)
       var list = el('div', { class: 'ds-list' });
       ids.forEach(function (id) {
         var st = store.style(id);
         var d = DataModel.resolveDatasetData(store.data.experiments, id);
         var label = DataModel.datasetLabelForMode(store.data.experiments, id, s.graphMode) + '  ·  ' + (d ? d.label : id);
         var row = el('div', { class: 'ds-row ' + st.visibility });
-        var swatch = el('button', { class: 'swatch', style: 'background:' + store.resolveColor(id) });
+        var curColor = colorMap[id] || store.resolveColor(id);
+        var swatch = el('button', { class: 'swatch', title: 'Change colour', style: 'background:' + curColor });
         swatch.addEventListener('click', function () {
-          openColorPicker(swatch, store.resolveColor(id), function (hex, done) {
+          openColorPicker(swatch, colorMap[id] || store.resolveColor(id), function (hex, done) {
             store.setDatasetStyle(id, { customColor: hex });
             swatch.style.background = hex; view.render();
             if (done) store.commit('color');
@@ -823,7 +877,8 @@
     // The graph colours a custom series by its position in the selection, so mirror
     // that here (colorByKey) — the picker swatch then matches the plotted line.
     var colorByKey = {};
-    sel.forEach(function (k, i) { selSet[k] = 1; colorByKey[k] = Theme.seriesColor(store.state.theme, i); });
+    var palSel = Theme.scale(store.state.theme, sel.length);
+    sel.forEach(function (k, i) { selSet[k] = 1; colorByKey[k] = palSel[i]; });
     var sensors = allSensorNames();
     var single = sensors.length <= 1;
 
@@ -909,7 +964,8 @@
 
   /* ============================ RIGHT PANEL ============================= */
   var toolOpen = {};
-  function renderRight() {
+  function renderRight() { preserveScroll(els.rightScroll, _renderRightInner); }
+  function _renderRightInner() {
     var host = els.rightScroll; clearNode(host);
     if (noData()) { host.appendChild(el('div', { html: '<p class="hint" style="padding:16px 14px">Analysis tools appear here once data is loaded.</p>' })); return; }
     var g = store.graph();
@@ -921,35 +977,35 @@
 
     tool(host, 'aggregate', Icons.avg, 'Statistics', g.stats.length > 0, function (body) {
       body.appendChild(statisticsEditor(g));
-    });
+    }, 'Plot the mean, median, mode, std-dev, or a Mean ± SD band across chosen datasets. Each line is frozen when added.');
 
     tool(host, 'stats', Icons.minmax, 'Min / Max / Mean', g.minmax.length > 0, function (body) {
       body.appendChild(statsEditor(g));
-    });
+    }, 'Mark the minimum and maximum, and read min / max / mean over any x-range.');
 
     tool(host, 'area', Icons.area, 'Area Under Curve', g.areas.length > 0, function (body) {
       body.appendChild(areaEditor(g));
-    });
+    }, 'Shade and integrate the area under a series over a chosen range.');
 
     tool(host, 'fit', Icons.line, 'Line of Best Fit', g.bestFit.length > 0, function (body) {
       body.appendChild(fitEditor(g));
-    });
+    }, 'Fit a straight line (solid in range, dotted where extrapolated) and read slope, intercept, and R².');
 
     tool(host, 'smooth', Icons.smooth, 'Smoothing', anySmooth(g), function (body) {
       body.appendChild(smoothEditor(g));
-    });
+    }, 'Apply an adjustable smoothing filter for display — the underlying data is never changed.');
 
     tool(host, 'manual', Icons.dots, 'Manual Plotting', (g.manualPoints.length + g.manualLines.length) > 0, function (body) {
       body.appendChild(manualEditor(g));
-    });
+    }, 'Add your own annotation points and reference lines (or double-click the chart to drop a point).');
 
     tool(host, 'cursor', Icons.cursor, 'Dual-Cursor Measure', g.cursors.length > 0, function (body) {
       body.appendChild(cursorEditor(g));
-    });
+    }, 'Place two vertical cursors to measure the Δx and Δy between them.');
 
     tool(host, 'threshold', Icons.threshold, 'Threshold Crossing', !!g.threshold, function (body) {
       body.appendChild(thresholdEditor(g));
-    });
+    }, 'Draw a horizontal threshold and mark where each series crosses it.');
   }
 
   function buildToggle(checked, onchange, label) {
@@ -957,10 +1013,10 @@
     input.addEventListener('change', function () { onchange(input.checked); });
     return [input, el('span', { class: 'box', html: Icons.check }), el('span', { text: label })];
   }
-  function tool(host, id, icon, name, active, build) {
+  function tool(host, id, icon, name, active, build, tip) {
     if (toolOpen[id] === undefined) toolOpen[id] = false;
     var card = el('div', { class: 'tool' + (toolOpen[id] ? '' : ' collapsed') + (active ? ' active' : '') });
-    var head = el('div', { class: 'tool-head' }, [
+    var head = el('div', { class: 'tool-head', title: tip || '' }, [
       el('span', { class: 't-ico', html: icon }), el('span', { class: 't-name', text: name }), el('span', { class: 'chev', html: Icons.chev }),
     ]);
     var body = el('div', { class: 'tool-body' });
@@ -992,6 +1048,39 @@
   function capLabel(text, mt) {
     return el('label', { style: 'display:block;font-size:11px;color:var(--text-3);margin:' + (mt || 12) + 'px 0 6px;font-weight:600;text-transform:uppercase;letter-spacing:.4px', text: text });
   }
+  /* Inline click-to-rename control: shows the text (faded, no-wrap) with a pencil
+   * that appears on hover; clicking swaps in an input. Committing an empty value
+   * calls onSet('') so callers can revert to an auto-generated name. */
+  function editableLabel(getText, onSet, opts) {
+    opts = opts || {};
+    var host = el('span', { class: 'editable' + (opts.cls ? ' ' + opts.cls : '') });
+    function show() {
+      clearNode(host);
+      host.title = opts.title || 'Click to rename';
+      host.appendChild(el('span', { class: 'editable-text', text: getText() }));
+      host.appendChild(el('span', { class: 'editable-pencil', html: Icons.pencil }));
+      host.onclick = function (e) { e.stopPropagation(); edit(); };
+    }
+    function edit() {
+      clearNode(host); host.onclick = null; host.title = '';
+      var inp = el('input', { class: 'editable-input', value: getText() });
+      if (opts.placeholder) inp.placeholder = opts.placeholder;
+      host.appendChild(inp);
+      inp.focus(); inp.select();
+      var done = false;
+      function finish(save) {
+        if (done) return; done = true;
+        if (save) onSet(inp.value.trim()); else show();
+      }
+      inp.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+        else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+      });
+      inp.addEventListener('blur', function () { finish(true); });
+    }
+    show();
+    return host;
+  }
   /* Full / Trial / Visible / Manual range selector shared by stats, area, fit. */
   function domainField(dom, onLive, onCommit) {
     var wrap = el('div', {});
@@ -1014,26 +1103,33 @@
 
   function statisticsEditor(g) {
     var wrap = el('div', {});
-    wrap.appendChild(el('p', { class: 'hint', text: 'Plot the mean, median, mode, or standard deviation across chosen datasets. Add as many as you like; hover a line for its value.' }));
+    wrap.appendChild(el('p', { class: 'hint', text: 'Plot the mean, median, mode, standard deviation, or a mean with a ±SD band across chosen datasets. Hover a line for its value; each line is frozen when added, so hiding a source series won’t change it.' }));
     var allIds = graphSeries().map(function (m) { return m.id; });
     if (g.statPick == null) g.statPick = allIds.slice();
     g.statPick = g.statPick.filter(function (id) { return allIds.indexOf(id) >= 0; });
     wrap.appendChild(datasetPicker('Compute across', g.statPick, function (ids) { g.statPick = ids; renderRight(); }));
     var addRow = el('div', { class: 'row wrap', style: 'gap:6px;margin-top:8px' });
-    [['mean', 'Mean'], ['median', 'Median'], ['mode', 'Mode'], ['stddev', 'Std Dev']].forEach(function (k) {
-      addRow.appendChild(el('button', { class: 'btn sm', html: Icons.plus + ' ' + k[1], title: 'Graph a ' + k[1] + ' line over the selected datasets',
+    [['mean', 'Mean'], ['median', 'Median'], ['mode', 'Mode'], ['stddev', 'Std Dev'], ['meanstd', 'Mean ± SD']].forEach(function (k) {
+      var tip = k[0] === 'meanstd'
+        ? 'Graph the mean plus a dotted ±1 standard-deviation band, in one colour'
+        : 'Graph a ' + k[1] + ' line over the selected datasets';
+      addRow.appendChild(el('button', { class: 'btn sm', html: Icons.plus + ' ' + k[1], title: tip,
         onclick: function () { if (!g.statPick.length) { toast('Select at least one dataset'); return; } addStat(k[0], g.statPick); } }));
     });
     wrap.appendChild(addRow);
     if (g.stats.length) {
       wrap.appendChild(capLabel('Graphed statistics', 14));
+      var labelMap = statLabelMap();
       var list = el('div', {});
       g.stats.forEach(function (stat) {
-        var sw = el('button', { class: 'swatch', style: 'background:' + stat.color });
+        var sw = el('button', { class: 'swatch', title: 'Change colour', style: 'background:' + stat.color });
         sw.addEventListener('click', function () { openColorPicker(sw, stat.color, function (h, done) { stat.color = h; sw.style.background = h; view.render(); if (done) store.commit('stat-color'); }); });
+        var name = editableLabel(
+          function () { return statDisplayName(stat, labelMap); },
+          function (v) { stat.name = v || null; store.commit('stat-rename'); },
+          { placeholder: autoStatName(stat, labelMap), title: 'Click to rename this statistic' });
         var del = el('button', { class: 'mini', title: 'Remove', html: Icons.trash, onclick: function () { g.stats = g.stats.filter(function (x) { return x !== stat; }); store.commit('stat-del'); } });
-        var count = stat.datasetIds && stat.datasetIds.length ? stat.datasetIds.length + ' datasets' : 'all graphed';
-        list.appendChild(el('div', { class: 'mp-entry' }, [sw, el('span', { class: 'mp-expr', text: (STAT_NAMES[stat.kind] || stat.kind) + ' of ' + count }), del]));
+        list.appendChild(el('div', { class: 'mp-entry' }, [sw, name, del]));
       });
       wrap.appendChild(list);
     }
@@ -1456,29 +1552,48 @@
     host.appendChild(el('div', { class: 'divider' }));
     host.appendChild(el('button', { class: 'btn sm icon' + (s.showGrid.major ? ' active' : ''), title: 'Major gridlines', html: Icons.grid, onclick: function () { s.showGrid.major = !s.showGrid.major; store.commit('grid'); } }));
     host.appendChild(el('button', { class: 'btn sm' + (s.showGrid.minor ? ' active' : ''), title: 'Minor gridlines', text: 'Minor', onclick: function () { s.showGrid.minor = !s.showGrid.minor; store.commit('grid'); } }));
-    host.appendChild(el('button', { class: 'btn sm' + (s.legend ? ' active' : ''), title: 'Legend', text: 'Legend', onclick: function () { s.legend = !s.legend; store.commit('legend'); } }));
-    host.appendChild(el('div', { style: 'flex:1' }));
-    var titleEl = el('span', { class: 'lbl chart-name', title: 'Click to rename this graph', text: chartTitle() });
-    titleEl.addEventListener('click', function () { editGraphName(titleEl); });
-    host.appendChild(titleEl);
+    host.appendChild(el('button', { class: 'btn sm' + (s.legend ? ' active' : ''), title: 'Show or hide the legend', text: 'Legend', onclick: function () { s.legend = !s.legend; store.commit('legend'); } }));
   }
-  function editGraphName(spanEl) {
+
+  /* ---- On-chart title: a transparent hit-area is positioned over the title the
+   * renderer draws, so the title (which appears in exports) is what you click to
+   * rename. A pencil appears on hover; clicking swaps in an input. ---- */
+  var titleEditing = false;
+  function positionTitleHit(layout) {
+    var hit = els.titleHit; if (!hit) return;
+    var box = layout && layout.titleBox;
+    if (noData() || !box || titleEditing) { hit.style.display = 'none'; return; }
+    hit.style.display = 'flex';
+    hit.style.left = box.x + 'px'; hit.style.top = box.y + 'px';
+    hit.style.width = box.w + 'px'; hit.style.height = box.h + 'px';
+  }
+  function beginTitleEdit() {
+    if (titleEditing || noData()) return;
+    titleEditing = true;
     var g = store.graph();
-    var input = el('input', { class: 'chart-name-input', value: chartTitle() });
-    spanEl.replaceWith(input);
+    var box = view && view._layout && view._layout.titleBox; if (!box) { titleEditing = false; return; }
+    els.titleHit.style.display = 'none';
+    var input = el('input', { class: 'chart-title-input', value: chartTitle() });
+    input.style.left = box.x + 'px'; input.style.top = box.y + 'px';
+    input.style.width = Math.max(box.w, 180) + 'px'; input.style.height = box.h + 'px';
+    els.chartWrap.appendChild(input);
     input.focus(); input.select();
     var done = false;
-    function commit() {
+    function finish(save) {
       if (done) return; done = true;
-      var v = input.value.trim();
-      g.name = (v === '' || v === autoChartTitle()) ? null : v;  // empty or unchanged-from-auto -> revert
-      store.commit('rename');   // re-renders toolbar (span back) + chart title
+      if (save) {
+        var v = input.value.trim();
+        g.name = (v === '' || v === autoChartTitle()) ? null : v;  // empty or unchanged-from-auto -> revert to auto
+      }
+      if (input.parentNode) input.parentNode.removeChild(input);
+      titleEditing = false;
+      if (save) store.commit('rename'); else { view.render(); }
     }
     input.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') { commit(); }
-      else if (e.key === 'Escape') { done = true; renderChartToolbar(); }
+      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
     });
-    input.addEventListener('blur', commit);
+    input.addEventListener('blur', function () { finish(true); });
   }
 
   /* ============================ TABS =================================== */
@@ -1745,14 +1860,33 @@
       actions: [{ label: 'Close', primary: true }] });
   }
   function shortcutsDialog() {
-    modal({ title: 'Keyboard Shortcuts', body:
+    modal({ title: 'Shortcuts & Interactions', body:
       '<div class="readout" style="font-size:12px"><div><span class="rk">Open folder</span><span class="rv">Ctrl + O</span></div>' +
       '<div><span class="rk">Undo / Redo</span><span class="rv">Ctrl+Z / Ctrl+Y</span></div>' +
       '<div><span class="rk">Zoom both axes</span><span class="rv">Scroll</span></div>' +
       '<div><span class="rk">Zoom X only</span><span class="rv">Ctrl + Scroll</span></div>' +
       '<div><span class="rk">Zoom Y only</span><span class="rv">Alt + Scroll</span></div>' +
       '<div><span class="rk">Pan</span><span class="rv">Drag chart</span></div>' +
-      '<div><span class="rk">Drop point / cursor</span><span class="rv">Double-click chart</span></div></div>',
+      '<div><span class="rk">Drop point / cursor</span><span class="rv">Double-click chart</span></div>' +
+      '<div><span class="rk">Select a series</span><span class="rv">Ctrl + click line</span></div>' +
+      '<div><span class="rk">Add to selection</span><span class="rv">Ctrl + click more</span></div>' +
+      '<div><span class="rk">Clear selection</span><span class="rv">Click empty area</span></div>' +
+      '<div><span class="rk">Actions on selection</span><span class="rv">Right-click chart</span></div>' +
+      '<div><span class="rk">Rename the graph</span><span class="rv">Click its on-chart title</span></div></div>',
+      actions: [{ label: 'Close', primary: true }] });
+  }
+  function guideDialog() {
+    modal({ title: 'Features & Tips', wide: true, body:
+      '<div style="line-height:1.65;font-size:13px;color:var(--text-2)">' +
+      '<p><b style="color:var(--text)">Graph modes.</b> Compare one sensor across trials, one trial across sensors, a full overview, or hand-pick anything in <b>Custom</b>. Sensor and trial buttons toggle series on and off quickly.</p>' +
+      '<p style="margin-top:10px"><b style="color:var(--text)">Selecting &amp; highlighting.</b> Ctrl-click a line to select it (Ctrl-click more to add). Selected lines are emphasized and the rest dim; click an empty area to clear. Right-click for quick actions (average the selection, hide, and more).</p>' +
+      '<p style="margin-top:10px"><b style="color:var(--text)">Statistics.</b> Under <b>Statistics</b>, plot the <b>mean, median, mode, standard deviation</b>, or a <b>Mean ± SD</b> band (a mean line with a dotted ±1σ band in the same colour). Each statistic is <b>frozen</b> when added — hiding a source trace afterwards won\'t change it, so you can graph an average and then hide the raw data to declutter. Every statistic is named automatically (e.g. “Mean of Trial 1, Trial 2…”); click its name to rename it.</p>' +
+      '<p style="margin-top:10px"><b style="color:var(--text)">Colours.</b> Each series in a view gets a distinct, professional colour, chosen to stay well-separated even with many datasets. Click any swatch to override a colour.</p>' +
+      '<p style="margin-top:10px"><b style="color:var(--text)">Naming.</b> Anything you can rename shows a small pencil on hover. Click the title on the chart to rename the graph; clear it to return to the automatic name.</p>' +
+      '<p style="margin-top:10px"><b style="color:var(--text)">Other tools.</b> Line of best fit (solid in range, dotted where extrapolated), min/max/mean readouts, area under the curve, smoothing, manual points &amp; lines, dual-cursor measure, and threshold crossings — all per-graph, so switching graphs never mixes them.</p>' +
+      '<p style="margin-top:10px"><b style="color:var(--text)">Units &amp; preferences.</b> Choose Celsius, Fahrenheit, or As Recorded for both the display and CSV export under <b>Settings → Preferences</b>, along with appearance and layout options.</p>' +
+      '<p style="margin-top:10px"><b style="color:var(--text)">Exporting.</b> Save publication-quality PNG or vector SVG, or export the organized data as CSV, from <b>Organize &amp; Export</b>.</p>' +
+      '</div>',
       actions: [{ label: 'Close', primary: true }] });
   }
 
@@ -1882,10 +2016,19 @@
     Theme.apply(store.state.theme);
     applyAppearance();
 
+    // Transparent hit-area over the on-chart title (created once, positioned each render).
+    els.titleHit = el('div', { class: 'chart-title-hit', title: 'Click to rename this graph' }, [
+      el('span', { class: 'chart-title-pencil', html: Icons.pencil }),
+    ]);
+    els.titleHit.style.display = 'none';
+    els.titleHit.addEventListener('click', beginTitleEdit);
+    els.chartWrap.appendChild(els.titleHit);
+
     view = new TS.ChartView(els.chart, {
       buildScene: buildScene, onHover: onHover, onHoverEnd: onHoverEnd,
       onViewChange: function () { updatePanSliders(); renderChartToolbar(); },
       onAutoModeChange: function () { renderChartToolbar(); },
+      onRendered: positionTitleHit,
       onManualPointMove: function (id, x, y) { var g = store.graph(); g.manualPoints.forEach(function (p) { if (p.id === id) { p.x = x; p.y = y; } }); },
       onManualPointDrop: function () { store.commit('manual-move'); },
       onPlotDblClick: onPlotDblClick,

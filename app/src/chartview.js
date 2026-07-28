@@ -87,6 +87,7 @@
       var rd = new R.CanvasRenderer(c);
       this._layout = R.renderChart(rd, this.cssW, this.cssH, scene);
       if (this._hover && this._hover.found) this._drawHover();
+      if (this.opts.onRendered) this.opts.onRendered(this._layout);
     },
 
     _drawHover: function () {

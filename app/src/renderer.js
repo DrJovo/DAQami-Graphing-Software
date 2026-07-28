@@ -335,9 +335,9 @@
       drawSeries(rd, s, sx, sy, plot, v, alpha, emphasize, T);
     });
 
-    // average lines
+    // average / statistics lines (incl. the dotted ±σ band around a mean)
     (ov.averageLines || []).forEach(function (a) {
-      drawPolyline(rd, a.xs, a.ys, sx, sy, v, { color: a.color, width: 2.4, dash: a.dash || [] });
+      drawPolyline(rd, a.xs, a.ys, sx, sy, v, { color: a.color, width: a.width || 2.4, dash: a.dash || [], alpha: a.alpha });
     });
     // best-fit lines: solid within the fitted range, dotted where extrapolated
     (ov.bestFit || []).forEach(function (b) {
@@ -438,12 +438,19 @@
     // axis titles
     if (scene.xLabel) rd.text(scene.xLabel, plot.x + plot.w / 2, H - 12, { color: T.text, size: 12, weight: '600', align: 'center', baseline: 'alphabetic' });
     if (scene.yLabel) rd.text(scene.yLabel, 16, plot.y + plot.h / 2, { color: T.text, size: 12, weight: '600', align: 'center', baseline: 'middle', rotate: -Math.PI / 2 });
-    if (scene.title) rd.text(scene.title, plot.x + plot.w / 2, 20, { color: T.text, size: 14, weight: '700', align: 'center', baseline: 'middle' });
+    var titleBox = null;
+    if (scene.title) {
+      rd.text(scene.title, plot.x + plot.w / 2, 20, { color: T.text, size: 14, weight: '700', align: 'center', baseline: 'middle' });
+      var tw = rd.measureText(scene.title, 14, UI_FONT);
+      var cx = plot.x + plot.w / 2;
+      // Cover the title, plus a little room on the right for the hover pencil.
+      titleBox = { x: cx - tw / 2 - 8, y: 6, w: tw + 16 + 18, h: 26 };  // clickable rename region (CSS px)
+    }
 
     // ---- legend (inside top-right) ----
     if (scene.legend !== false) drawLegend(rd, series, ov, plot, T);
 
-    return { plot: plot, sx: sx, sy: sy, xTicks: xt, yTicks: yt };
+    return { plot: plot, sx: sx, sy: sy, xTicks: xt, yTicks: yt, titleBox: titleBox };
   }
 
   function drawMinor(rd, tk, axis, sx, sy, plot, T) {

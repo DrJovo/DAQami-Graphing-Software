@@ -28,8 +28,8 @@
   <!-- ============================ TOOLBAR ============================ -->
   <div class="toolbar" id="toolbar">
     <div class="group">
-      <button class="btn primary" id="openFolderBtn"><span class="ic"></span> Open Data Folder</button>
-      <button class="btn" id="organizeBtn" disabled><span class="ic"></span> Organize &amp; Export</button>
+      <button class="btn primary" id="openFolderBtn" title="Open a folder of DAQami CSV exports (Ctrl+O)"><span class="ic"></span> Open Data Folder</button>
+      <button class="btn" id="organizeBtn" title="Review, rename, and export the organized data as CSV" disabled><span class="ic"></span> Organize &amp; Export</button>
     </div>
     <div class="divider"></div>
     <div class="group" id="undoGroup">
@@ -38,8 +38,8 @@
     </div>
     <div class="divider"></div>
     <div class="group">
-      <button class="btn" id="exportPngBtn" disabled><span class="ic"></span> PNG</button>
-      <button class="btn" id="exportSvgBtn" disabled><span class="ic"></span> SVG</button>
+      <button class="btn" id="exportPngBtn" title="Export the current graph as a high-resolution PNG image" disabled><span class="ic"></span> PNG</button>
+      <button class="btn" id="exportSvgBtn" title="Export the current graph as a scalable vector SVG" disabled><span class="ic"></span> SVG</button>
     </div>
     <div class="spacer" style="flex:1"></div>
     <div class="group">
@@ -56,9 +56,9 @@
 
     <div class="center">
       <div class="tabs" id="tabs">
-        <button class="tab on" data-tab="chart">Graph</button>
-        <button class="tab" data-tab="raw">Raw Data</button>
-        <button class="tab" data-tab="details">Details</button>
+        <button class="tab on" data-tab="chart" title="The interactive plot and analysis tools">Graph</button>
+        <button class="tab" data-tab="raw" title="Browse the parsed sample table for each trial">Raw Data</button>
+        <button class="tab" data-tab="details" title="Metadata and parsing notes for the loaded files">Details</button>
       </div>
       <div class="tab-body">
         <!-- CHART -->
@@ -74,11 +74,11 @@
                 <button class="btn primary" id="openFolderBtn2">Open Data Folder</button>
               </div>
             </div>
-            <div class="y-pan"><input type="range" class="slider" id="yPan" min="0" max="1000" value="500" disabled></div>
+            <div class="y-pan"><input type="range" class="slider" id="yPan" min="0" max="1000" value="500" title="Pan the temperature (Y) axis — or Alt+scroll over the chart" disabled></div>
           </div>
           <div class="x-pan-row">
             <span class="zoom-hint" id="zoomHint">Scroll: zoom · Ctrl+scroll: X · Alt+scroll: Y · drag: pan</span>
-            <input type="range" class="slider" id="xPan" min="0" max="1000" value="500" disabled>
+            <input type="range" class="slider" id="xPan" min="0" max="1000" value="500" title="Pan the time (X) axis — or Ctrl+scroll over the chart" disabled>
           </div>
         </section>
         <!-- RAW -->

@@ -14,10 +14,43 @@
 (function (TS) {
   'use strict';
 
-  // Categorical series palette (8 hues), per surface.
+  // Categorical series palette — a wide, professional set of well-separated hues.
+  // Ordering interleaves the colour wheel so that the first few entries (the common
+  // small-N case) are maximally distinct from one another. Colourblind-friendly
+  // pairs (blue/orange, blue/red) lead the sequence.
   var SERIES = {
-    light: ['#2a78d6', '#1baf7a', '#eda100', '#008300', '#4a3aa7', '#e34948', '#e87ba4', '#eb6834'],
-    dark:  ['#3987e5', '#199e70', '#c98500', '#008300', '#9085e9', '#e66767', '#d55181', '#d95926'],
+    light: [
+      '#2f6feb', // blue
+      '#e8710a', // orange
+      '#17a34a', // green
+      '#c026d3', // magenta
+      '#0e9aad', // cyan
+      '#e02424', // red
+      '#7c3aed', // violet
+      '#6aa30d', // lime
+      '#4f46e5', // indigo
+      '#c99700', // amber
+      '#0d9488', // teal
+      '#db2777', // pink
+      '#475569', // slate
+      '#92400e', // brown
+    ],
+    dark: [
+      '#5b8dff', // blue
+      '#fb8b3d', // orange
+      '#2fbd66', // green
+      '#e05ce8', // magenta
+      '#2fc4d6', // cyan
+      '#f2555a', // red
+      '#a78bfa', // violet
+      '#9bd23a', // lime
+      '#818cf8', // indigo
+      '#e6b52e', // amber
+      '#2fd4bf', // teal
+      '#f472b6', // pink
+      '#94a3b8', // slate
+      '#c88a4a', // brown
+    ],
   };
 
   var THEMES = {
@@ -107,6 +140,49 @@
     return arr[((index % arr.length) + arr.length) % arr.length];
   }
 
+  /* ---- HSL -> hex, for generating extra distinct hues beyond the curated set ---- */
+  function hslToHex(h, s, l) {
+    h = ((h % 360) + 360) % 360; s /= 100; l /= 100;
+    var c = (1 - Math.abs(2 * l - 1)) * s;
+    var x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    var m = l - c / 2, r = 0, g = 0, b = 0;
+    if (h < 60) { r = c; g = x; }
+    else if (h < 120) { r = x; g = c; }
+    else if (h < 180) { g = c; b = x; }
+    else if (h < 240) { g = x; b = c; }
+    else if (h < 300) { r = x; b = c; }
+    else { r = c; b = x; }
+    function hx(v) { return ('0' + Math.round((v + m) * 255).toString(16)).slice(-2); }
+    return '#' + hx(r) + hx(g) + hx(b);
+  }
+
+  /* -----------------------------------------------------------------------------
+   * scale(theme, n) — return n maximally distinct, professional colours.
+   *   • n within the curated palette  -> the curated colours (already ordered for
+   *     maximum separation), so small graphs get the hand-tuned hues.
+   *   • n beyond the palette           -> a fully generated even-hue ramp so that
+   *     large graphs still get n *distinct* colours instead of cycling/repeating.
+   * This is what makes "20 datasets" show 20 different colours rather than three
+   * of them landing on the same hue.
+   * --------------------------------------------------------------------------- */
+  function scale(theme, n) {
+    var arr = SERIES[theme] || SERIES.light;
+    n = Math.max(1, n | 0);
+    if (n <= arr.length) return arr.slice(0, n);
+    // Generate n evenly-spaced hues; alternate lightness in two bands to boost
+    // separation between neighbours once the wheel gets crowded.
+    var dark = theme === 'dark';
+    var out = [];
+    for (var i = 0; i < n; i++) {
+      var hue = (i * 360 / n + 205) % 360;           // start near blue, sweep the wheel
+      var band = i % 2;
+      var light = dark ? (band ? 68 : 55) : (band ? 42 : 55);
+      var sat = dark ? 62 : 64;
+      out.push(hslToHex(hue, sat, light));
+    }
+    return out;
+  }
+
   function applyTheme(name) {
     var vars = THEMES[name] || THEMES.light;
     var root = document.documentElement;
@@ -118,6 +194,8 @@
     THEMES: THEMES,
     SERIES: SERIES,
     seriesColor: seriesColor,
+    scale: scale,
+    hslToHex: hslToHex,
     chart: function (name) { return CHART[name] || CHART.light; },
     apply: applyTheme,
   };
