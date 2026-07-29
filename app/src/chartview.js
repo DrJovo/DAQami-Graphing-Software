@@ -197,6 +197,16 @@
       if (axis === 'x') { this.view.xMin = nLo; this.view.xMax = nHi; }
       else { this.view.yMin = nLo; this.view.yMax = nHi; }
     },
+    /* Button-driven zoom about the view centre. axis: 'x' | 'y' | 'both';
+     * factor < 1 zooms in, > 1 zooms out. */
+    zoomAxis: function (axis, factor) {
+      if (!this.view) return;
+      if (axis === 'x' || axis === 'both') this._zoom('x', factor, 0.5);
+      if (axis === 'y' || axis === 'both') this._zoom('y', factor, 0.5);
+      this._exitAuto();
+      this.render();
+      this._emitView();
+    },
 
     _onDown: function (e) {
       if (e.button !== 0) return;    // left button only (right = context menu)
@@ -332,10 +342,12 @@
 
     /* pan by fraction of current range: frac in [0,1] maps slider to position */
     panAxisTo: function (axis, frac, fullRange) {
-      // fullRange: {min,max} of data extent; keep current width, position center by frac
+      // Keep the current width; slide the view so the extremes of the bar push the
+      // data fully to the opposite edge: frac 0 -> the first datapoint sits at the
+      // far (right/top) edge; frac 1 -> the last datapoint sits at the near edge.
       var width = axis === 'x' ? (this.view.xMax - this.view.xMin) : (this.view.yMax - this.view.yMin);
-      var span = fullRange.max - fullRange.min;
-      var center = fullRange.min + span * frac;
+      var lo = fullRange.min - width / 2, hi = fullRange.max + width / 2;
+      var center = lo + (hi - lo) * frac;
       if (axis === 'x') { this.view.xMin = center - width / 2; this.view.xMax = center + width / 2; }
       else { this.view.yMin = center - width / 2; this.view.yMax = center + width / 2; }
       this._exitAuto();

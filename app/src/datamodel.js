@@ -77,7 +77,7 @@
         tr.channels.forEach(function (ch) {
           var id = datasetId(exp.number, tr.trial, ch.name);
           styles[id] = {
-            colorIndex: i % 8,
+            colorIndex: i,   // global, stable index into a palette sized to the dataset count
             customColor: null,
             shape: SHAPES[i % SHAPES.length],
             visibility: 'on', // 'on' | 'dim' | 'off'

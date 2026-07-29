@@ -491,17 +491,15 @@
   function graphSeries() {
     var s = store.state;
     if (s.graphMode === 'COMPARE_EXP') return customSeries();
-    var ids = store.currentDatasetIds();
-    // Distinct colours are assigned by position within THIS graph, sized to the
-    // number of series shown here — so every series in the view gets a different
-    // colour (no cycling collisions), while a user-set custom colour still wins.
-    var pal = Theme.scale(s.theme, ids.length);
-    return ids.map(function (id, i) {
+    // Colours are stable per-dataset (customColor, else a distinct default from a
+    // palette sized to the whole dataset count), so a dataset keeps its colour in
+    // every mode and the colour-code button's choices carry across views.
+    return store.currentDatasetIds().map(function (id) {
       var d = DataModel.resolveDatasetData(store.data.experiments, id);
       if (!d) return null;
       var st = store.style(id);
       return { id: id, xs: d.xs, rawYs: convYs(d.ys), unit: displayUnit(d.unit),
-        color: st.customColor || pal[i],
+        color: store.resolveColor(id),
         shape: st.shape, visibility: st.visibility,
         label: DataModel.datasetLabelForMode(store.data.experiments, id, s.graphMode) };
     }).filter(Boolean);
@@ -510,6 +508,39 @@
    * they always match the line on the chart). */
   function graphColorMap() { var m = {}; graphSeries().forEach(function (x) { m[x.id] = x.color; }); return m; }
   function graphMetaMap() { var m = {}; graphSeries().forEach(function (x) { m[x.id] = x; }); return m; }
+
+  /* Bulk visibility for every dataset in the current graph. */
+  function setAllVisibility(v) {
+    store.currentDatasetIds().forEach(function (id) { store.setDatasetStyle(id, { visibility: v }); });
+    store.commit('visibility-all');
+  }
+
+  /* Colour-code: give each trial-run its own hue (rainbow order) and shade each
+   * sensor progressively darker (AI0 the brightest/most vibrant, the last sensor
+   * the darkest but still clearly the same hue). Writes a customColor to every
+   * dataset, so pressing it again snaps back to these colours even after manual
+   * edits. Colours are stored per-dataset, so they persist across every mode. */
+  function colorCodeDatasets() {
+    var pairs = [];
+    store.data.experiments.forEach(function (exp) {
+      exp.trials.forEach(function (tr) { pairs.push({ exp: exp, tr: tr }); });
+    });
+    var T = pairs.length || 1;
+    pairs.forEach(function (pr, ti) {
+      var hue = (ti * 360 / T) % 360;                 // rainbow across the trials
+      var chans = pr.exp.channelNames, S = chans.length;
+      pr.tr.channels.forEach(function (ch) {
+        var s = chans.indexOf(ch.name); if (s < 0) s = 0;
+        var frac = S > 1 ? s / (S - 1) : 0;            // 0 = first sensor (brightest)
+        var light = 60 - 32 * frac;                   // 60% -> 28%
+        var sat = 92 - 20 * frac;                     // vivid, easing off slightly when dark
+        var hex = Theme.hslToHex(hue, sat, light);
+        store.setDatasetStyle(DataModel.datasetId(pr.exp.number, pr.tr.trial, ch.name), { customColor: hex });
+      });
+    });
+    store.commit('color-code');
+    toast('Colour-coded by trial and sensor');
+  }
 
   /* Smoothing is expensive and graphSeries() runs several times per render, so
    * cache the Savitzky/Gaussian result by (id, strength, unit, length). Cleared
@@ -524,12 +555,35 @@
     return out;
   }
 
+  /* Apply the fully-smoothed curve only inside the chosen region, crossfading back
+   * to the raw data across a margin just inside each edge — so the smoothed segment
+   * joins the untouched raw data continuously and NOTHING outside the region is
+   * altered. A 'full' region means smooth everything (no blending needed). */
+  function blendSmoothRegion(xs, raw, sm, dom, meta) {
+    if (!dom || dom.kind === 'full') return sm;
+    var r = resolveDomain(meta, dom), x0 = r[0], x1 = r[1];
+    if (!(x1 > x0)) return raw;
+    var tw = Math.min(0.2 * (x1 - x0), 0.5 * (x1 - x0));   // crossfade width inside each edge
+    if (!(tw > 0)) tw = (x1 - x0);
+    var out = new Float64Array(xs.length);
+    for (var i = 0; i < xs.length; i++) {
+      var x = xs[i];
+      if (x < x0 || x > x1) { out[i] = raw[i]; continue; }   // outside: untouched raw data
+      var w = 1;
+      if (x < x0 + tw) w = (x - x0) / tw;
+      else if (x > x1 - tw) w = (x1 - x) / tw;
+      w = Math.max(0, Math.min(1, w)); w = w * w * (3 - 2 * w);   // smoothstep for a soft join
+      out[i] = raw[i] * (1 - w) + sm[i] * w;
+    }
+    return out;
+  }
+
   /* What the chart draws: graphSeries + per-series smoothing + plot styling. */
   function seriesForCurrentGraph() {
     var s = store.state, g = store.graph();
     return graphSeries().map(function (m) {
       var ys = m.rawYs, sm = g.smooth[m.id];
-      if (sm && sm.on) ys = smoothedYs(m.id, m.rawYs, sm.strength);
+      if (sm && sm.on) ys = blendSmoothRegion(m.xs, m.rawYs, smoothedYs(m.id, m.rawYs, sm.strength), g.smoothDomain, m);
       return { id: m.id, xs: m.xs, ys: ys, rawYs: m.rawYs, unit: m.unit, color: m.color,
         shape: m.shape, visibility: m.visibility, plotType: s.plotType,
         lineWidth: s.lineWidth, markerSize: s.markerSize, label: m.label };
@@ -583,14 +637,22 @@
     var avg = Analysis.averageSeries(arr);
     return { xs: avg.xs, ys: avg.ys, unit: unit, label: 'E' + ea + ' avg · ' + sen };
   }
+  /* Colour for a custom item. Raw items reuse the underlying dataset's stable
+   * colour (so custom mode matches every other view and the colour-code button);
+   * per-experiment averages get their own stable distinct colour. */
+  function customKeyColor(key) {
+    var p = key.split('|');
+    if (p[0] === 'R') return store.resolveColor(DataModel.datasetId(+p[1].slice(1), +p[2].slice(1), p[3]));
+    var avg = allAvgKeys(), idx = avg.indexOf(key), nRaw = allRawKeys().length;
+    var pal = Theme.scale(store.state.theme, nRaw + avg.length);
+    return pal[nRaw + (idx < 0 ? 0 : idx)];
+  }
   function customSeries() {
-    var s = store.state, out = [];
-    var sel = customState().selected;
-    var pal = Theme.scale(s.theme, sel.length);
-    sel.forEach(function (key, i) {
+    var out = [];
+    customState().selected.forEach(function (key) {
       var d = customResolve(key); if (!d) return;
       out.push({ id: 'CUST_' + key, xs: d.xs, rawYs: convYs(d.ys), unit: displayUnit(d.unit),
-        color: pal[i], shape: 'circle', visibility: 'on', label: d.label });
+        color: customKeyColor(key), shape: 'circle', visibility: 'on', label: d.label });
     });
     return out;
   }
@@ -644,18 +706,13 @@
     var ov = { averageLines: [], bestFit: [], minmax: [], areas: [], manualPoints: [], manualLines: [], cursors: [], thresholds: [] };
     var visible = series.filter(function (s) { return s.visibility !== 'off' && s.xs && s.xs.length; });
 
-    var statLabels = null; // built lazily: id -> series label, for default stat names
     (g.stats || []).forEach(function (stat) {
-      // Frozen: compute over the snapshotted datasets regardless of visibility, so
-      // hiding a source series never changes the line.
-      var ids = stat.datasetIds || [];
-      var chosen = ids.length
-        ? series.filter(function (s) { return ids.indexOf(s.id) >= 0 && s.xs && s.xs.length; })
-        : series.filter(function (s) { return s.xs && s.xs.length; });
-      if (!chosen.length) return;
-      if (!statLabels) { statLabels = {}; series.forEach(function (s) { statLabels[s.id] = s.label; }); }
-      var pts = chosen.map(function (s) { return { xs: s.xs, ys: s.ys }; });
-      var label = ellipsize(statDisplayName(stat, statLabels), 44);
+      // Truly frozen: resolve each source dataset directly, independent of the
+      // current selection/visibility, so hiding OR unchecking a source (even in
+      // Custom mode) never changes the line.
+      var pts = (stat.datasetIds || []).map(statSourceSeries).filter(function (p) { return p && p.xs && p.xs.length; });
+      if (!pts.length) return;
+      var label = ellipsize(statDisplayName(stat), 44);
       if (stat.kind === 'meanstd') {
         // Mean (solid) plus ±1 std-dev drawn as a dotted band in the same colour.
         var meanA = Analysis.aggregateSeries(pts, 'mean');
@@ -700,7 +757,7 @@
     });
     ov.manualLines = g.manualLines.map(function (l) {
       return { id: l.id, axis: l.axis, value: l.value, color: l.color, style: l.style,
-        label: l.showLabel === false ? null : (l.label || null) };
+        label: l.showLabel === false ? null : (l.label || (l.axis + ' = ' + fmt(l.value, 3))) };
     });
     ov.cursors = g.cursors.map(function (x) { return { x: x, color: accentHex() }; });
     if (g.threshold) {
@@ -717,15 +774,30 @@
   // line never disappears when the theme is switched after it was created.
   var STAT_COLORS = ['#7c3aed', '#0891b2', '#ca8a04', '#dc2626', '#16a34a', '#db2777'];
   function ellipsize(str, n) { return (str && str.length > n) ? str.slice(0, n - 1) + '…' : str; }
+
+  /* Resolve a statistic's source dataset id to its data (display units) and label
+   * DIRECTLY — independent of the current selection or visibility — so a graphed
+   * statistic is truly frozen. Handles both normal dataset ids and custom-mode ids
+   * ('CUST_<key>'), so unchecking a dataset in Custom mode can't shift the line. */
+  function statSourceSeries(id) {
+    if (id.indexOf('CUST_') === 0) {
+      var d = customResolve(id.slice(5));
+      return d ? { xs: d.xs, ys: convYs(d.ys) } : null;
+    }
+    var dd = DataModel.resolveDatasetData(store.data.experiments, id);
+    return dd ? { xs: dd.xs, ys: convYs(dd.ys) } : null;
+  }
+  function statSourceLabel(id) {
+    if (id.indexOf('CUST_') === 0) { var d = customResolve(id.slice(5)); return d ? d.label : id; }
+    var dd = DataModel.resolveDatasetData(store.data.experiments, id);
+    return dd ? DataModel.datasetLabelForMode(store.data.experiments, id, store.state.graphMode) : id;
+  }
   // Default name for a graphed statistic: "<operation> of <dataset a>, <dataset b>…".
-  // labelById maps a source dataset id to its label in the current graph.
-  function autoStatName(stat, labelById) {
-    var ids = stat.datasetIds || [];
-    var names = ids.map(function (id) { return (labelById && labelById[id]) || id; });
+  function autoStatName(stat) {
+    var names = (stat.datasetIds || []).map(statSourceLabel);
     return (STAT_NAMES[stat.kind] || stat.kind) + ' of ' + (names.length ? names.join(', ') : 'graphed data');
   }
-  function statDisplayName(stat, labelById) { return stat.name || autoStatName(stat, labelById); }
-  function statLabelMap() { var m = {}; graphSeries().forEach(function (x) { m[x.id] = x.label; }); return m; }
+  function statDisplayName(stat) { return stat.name || autoStatName(stat); }
   function nextStatColor(g) { return STAT_COLORS[g.stats.length % STAT_COLORS.length]; }
   function addStat(kind, ids) {
     var g = store.graph();
@@ -836,7 +908,17 @@
     if (s.graphMode === 'COMPARE_EXP') return;
     host.appendChild(section('Data Series', function (body) {
       var ids = store.currentDatasetIds();
-      var colorMap = graphColorMap();   // actual plotted colours (position-based + overrides)
+      var colorMap = graphColorMap();   // actual plotted colours (stable per-dataset + overrides)
+
+      // Bulk actions: set visibility for every dataset at once, plus a one-shot
+      // colour-code that hues by trial and shades by sensor.
+      var bulk = el('div', { class: 'ds-bulk' });
+      bulk.appendChild(el('button', { class: 'btn xs', text: 'Show all', title: 'Show every dataset', onclick: function () { setAllVisibility('on'); } }));
+      bulk.appendChild(el('button', { class: 'btn xs', text: 'Dim all', title: 'Dim every dataset (kept faint in the background)', onclick: function () { setAllVisibility('dim'); } }));
+      bulk.appendChild(el('button', { class: 'btn xs', text: 'Hide all', title: 'Hide every dataset', onclick: function () { setAllVisibility('off'); } }));
+      bulk.appendChild(el('button', { class: 'btn xs', html: Icons.palette + ' Colour-code', title: 'Assign each trial a hue and each sensor a darker shade of it (AI0 brightest). Press again to reset to these colours.', onclick: colorCodeDatasets }));
+      body.appendChild(bulk);
+
       var list = el('div', { class: 'ds-list' });
       ids.forEach(function (id) {
         var st = store.style(id);
@@ -877,8 +959,7 @@
     // The graph colours a custom series by its position in the selection, so mirror
     // that here (colorByKey) — the picker swatch then matches the plotted line.
     var colorByKey = {};
-    var palSel = Theme.scale(store.state.theme, sel.length);
-    sel.forEach(function (k, i) { selSet[k] = 1; colorByKey[k] = palSel[i]; });
+    sel.forEach(function (k) { selSet[k] = 1; colorByKey[k] = customKeyColor(k); });
     var sensors = allSensorNames();
     var single = sensors.length <= 1;
 
@@ -1119,15 +1200,14 @@
     wrap.appendChild(addRow);
     if (g.stats.length) {
       wrap.appendChild(capLabel('Graphed statistics', 14));
-      var labelMap = statLabelMap();
       var list = el('div', {});
       g.stats.forEach(function (stat) {
         var sw = el('button', { class: 'swatch', title: 'Change colour', style: 'background:' + stat.color });
         sw.addEventListener('click', function () { openColorPicker(sw, stat.color, function (h, done) { stat.color = h; sw.style.background = h; view.render(); if (done) store.commit('stat-color'); }); });
         var name = editableLabel(
-          function () { return statDisplayName(stat, labelMap); },
+          function () { return statDisplayName(stat); },
           function (v) { stat.name = v || null; store.commit('stat-rename'); },
-          { placeholder: autoStatName(stat, labelMap), title: 'Click to rename this statistic' });
+          { placeholder: autoStatName(stat), title: 'Click to rename this statistic' });
         var del = el('button', { class: 'mini', title: 'Remove', html: Icons.trash, onclick: function () { g.stats = g.stats.filter(function (x) { return x !== stat; }); store.commit('stat-del'); } });
         list.appendChild(el('div', { class: 'mp-entry' }, [sw, name, del]));
       });
@@ -1217,6 +1297,13 @@
   function smoothEditor(g) {
     var wrap = el('div', {});
     wrap.appendChild(el('p', { class: 'hint', text: 'Gaussian smoothing reduces noise without the overshoot ("bumps") a polynomial fit adds at sharp changes. Use prediction to read a value between samples.' }));
+
+    // Optional region: smoothing only applies inside this range and crossfades back
+    // to the raw data at the edges, so data outside is left completely untouched.
+    if (!g.smoothDomain) g.smoothDomain = TS.freshDomain();
+    wrap.appendChild(domainField(g.smoothDomain, function () { view.render(); }, function () { store.commit('smooth-domain'); }));
+    wrap.appendChild(el('p', { class: 'hint', style: 'margin-top:6px', text: 'Smoothing runs over the ' + domainLabel(g.smoothDomain) + '; where the region ends, the curve blends smoothly back into the untouched raw data.' }));
+
     graphSeries().forEach(function (m) {
       var id = m.id;
       if (!g.smooth[id]) g.smooth[id] = { on: false, strength: 6 };
@@ -1294,7 +1381,10 @@
       inp.addEventListener('change', function () { store.commit('manual-label'); });
       mid = inp;
     } else {
-      mid = el('span', { class: 'mp-expr', text: item.axis + ' = ' + fmt(item.value, 3) });
+      var lnp = el('input', { class: 'mp-label', value: item.label || '', placeholder: item.axis + ' = ' + fmt(item.value, 3), title: 'Custom label (blank = the line’s equation)' });
+      lnp.addEventListener('input', function () { item.label = lnp.value.trim() || null; view.render(); });
+      lnp.addEventListener('change', function () { store.commit('manual-label'); });
+      mid = lnp;
     }
 
     var showing = item.showLabel !== false;
@@ -1371,14 +1461,31 @@
     wrap.appendChild(input);
     var out = el('div', { class: 'readout', style: 'margin-top:10px' });
     wrap.appendChild(out);
+    var expanded = {};              // series id -> show-all toggle, remembered across redraws
+    var LIMIT = 6;                  // collapse past this many crossings
     function renderThreshReadout() {
       clearNode(out);
       if (!g.threshold) { out.appendChild(el('div', { class: 'hint', text: 'Enter a threshold.' })); return; }
-      seriesForCurrentGraph().filter(function (s) { return s.visibility !== 'off'; }).forEach(function (s) {
+      var vis = seriesForCurrentGraph().filter(function (s) { return s.visibility !== 'off'; });
+      if (!vis.length) { out.appendChild(el('div', { class: 'hint', text: 'No visible series to measure.' })); return; }
+      vis.forEach(function (s) {
         var cr = Analysis.thresholdCrossings(s.xs, s.ys, g.threshold.level);
-        out.appendChild(el('div', { html: '<b>' + s.label + '</b>' }));
-        if (!cr.length) out.appendChild(el('div', { html: '<span class="rk">crossings</span><span class="rv">none</span>' }));
-        else cr.slice(0, 6).forEach(function (c) { out.appendChild(el('div', { html: '<span class="rk">' + (c.rising ? '↑' : '↓') + '</span><span class="rv">' + fmt(c.x, 3) + ' s</span>' })); });
+        out.appendChild(el('div', { class: 'th-head' }, [
+          el('b', { text: s.label }),
+          el('span', { class: 'rk', text: cr.length + (cr.length === 1 ? ' crossing' : ' crossings') }),
+        ]));
+        if (!cr.length) { out.appendChild(el('div', { html: '<span class="rk">—</span><span class="rv">none</span>' })); return; }
+        var isExp = !!expanded[s.id];
+        (isExp ? cr : cr.slice(0, LIMIT)).forEach(function (c) {
+          out.appendChild(el('div', { html:
+            '<span class="rk th-dir ' + (c.rising ? 'up' : 'down') + '">' + (c.rising ? '↑ rising' : '↓ falling') +
+            '</span><span class="rv">' + fmt(c.x, 3) + ' s</span>' }));
+        });
+        if (cr.length > LIMIT) {
+          var btn = el('button', { class: 'link-btn', text: isExp ? 'Show less' : ('Show ' + (cr.length - LIMIT) + ' more') });
+          btn.addEventListener('click', function () { expanded[s.id] = !isExp; renderThreshReadout(); });
+          out.appendChild(btn);
+        }
       });
     }
     renderThreshReadout();
@@ -1553,6 +1660,19 @@
     host.appendChild(el('button', { class: 'btn sm icon' + (s.showGrid.major ? ' active' : ''), title: 'Major gridlines', html: Icons.grid, onclick: function () { s.showGrid.major = !s.showGrid.major; store.commit('grid'); } }));
     host.appendChild(el('button', { class: 'btn sm' + (s.showGrid.minor ? ' active' : ''), title: 'Minor gridlines', text: 'Minor', onclick: function () { s.showGrid.minor = !s.showGrid.minor; store.commit('grid'); } }));
     host.appendChild(el('button', { class: 'btn sm' + (s.legend ? ' active' : ''), title: 'Show or hide the legend', text: 'Legend', onclick: function () { s.legend = !s.legend; store.commit('legend'); } }));
+
+    // Zoom controls on the right (where the graph name used to sit). Left-click
+    // zooms in; right-click zooms out.
+    host.appendChild(el('div', { style: 'flex:1' }));
+    function zoomBtn(axis, icon, label) {
+      var b = el('button', { class: 'btn sm icon', title: 'Zoom in — ' + label + ' (right-click to zoom out)', html: icon,
+        onclick: function () { view.zoomAxis(axis, 0.8); } });
+      b.addEventListener('contextmenu', function (e) { e.preventDefault(); view.zoomAxis(axis, 1.25); });
+      return b;
+    }
+    host.appendChild(zoomBtn('both', Icons.zoomBoth, 'both axes'));
+    host.appendChild(zoomBtn('x', Icons.zoomX, 'time (X) axis only'));
+    host.appendChild(zoomBtn('y', Icons.zoomY, 'temperature (Y) axis only'));
   }
 
   /* ---- On-chart title: a transparent hit-area is positioned over the title the
@@ -1970,8 +2090,13 @@
     settingSliders = true;
     var v = view.getView(), ext = dataExtent();
     var xc = (v.xMin + v.xMax) / 2, yc = (v.yMin + v.yMax) / 2;
-    var xf = (xc - ext.xMin) / (ext.xMax - ext.xMin || 1);
-    var yf = (yc - ext.yMin) / (ext.yMax - ext.yMin || 1);
+    var xw = v.xMax - v.xMin, yw = v.yMax - v.yMin;
+    // Mirror panAxisTo's symmetric range so the thumb tracks how far the data has
+    // been pushed toward the far edge (extremes = data at the opposite edge).
+    var xLo = ext.xMin - xw / 2, xHi = ext.xMax + xw / 2;
+    var yLo = ext.yMin - yw / 2, yHi = ext.yMax + yw / 2;
+    var xf = (xc - xLo) / (xHi - xLo || 1);
+    var yf = (yc - yLo) / (yHi - yLo || 1);
     els.xPan.value = Math.max(0, Math.min(1000, xf * 1000));
     els.yPan.value = Math.max(0, Math.min(1000, yf * 1000)); // rotated slider: 0=bottom
     els.xPan.disabled = els.yPan.disabled = false;

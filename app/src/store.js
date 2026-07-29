@@ -28,6 +28,7 @@
       minmax: [], minmaxDomain: freshDomain(),     // [datasetId,...]
       areas: [], areaDomain: freshDomain(),        // [datasetId,...]
       smooth: {},             // datasetId -> { on:bool, strength:number }
+      smoothDomain: freshDomain(),   // x-range the smoothing is applied over (blended at its edges)
       cursors: [],            // up to 2 x-values
       threshold: null,        // null | { level:number }
     };
@@ -128,6 +129,7 @@
         this.resetHistory('load');
       }
       this._defaultStylesCache = DM.defaultStyles(experiments);
+      this._colorN = Object.keys(this._defaultStylesCache).length;   // palette size for stable default colours
       this.state.dirty = false;
       this.notify();
     },
@@ -172,7 +174,12 @@
     },
     resolveColor: function (id) {
       var st = this.style(id);
-      return st.customColor || TS.Theme.seriesColor(this.state.theme, st.colorIndex);
+      if (st.customColor) return st.customColor;
+      // Stable, distinct default: a palette sized to the total dataset count, indexed
+      // by this dataset's global slot — so a dataset keeps its colour in every mode.
+      var n = this._colorN || 8;
+      var pal = TS.Theme.scale(this.state.theme, n);
+      return pal[((st.colorIndex % n) + n) % n];
     },
     setDatasetStyle: function (id, patch) {
       Object.assign(this.style(id), patch);
