@@ -14,6 +14,9 @@
   var rawPage = 0, rawTrialId = null;
   var selection = {};        // series id -> true (transient chart selection, not saved)
   var selectionKey = null;   // the graphKey the current selection belongs to
+  var viewByGraph = {};      // graphKey -> { v:{xMin,xMax,yMin,yMax}, auto } — remembered zoom/pan per graph
+  var viewKeyState = null;   // the graphKey the live view currently belongs to
+  var ctrlHeld = false;      // live Ctrl/Cmd state, for disabling pan-bar snapping
   function hasSelection() { for (var k in selection) if (selection[k]) return true; return false; }
   function selectedIds() { return Object.keys(selection).filter(function (k) { return selection[k]; }); }
   function clearSelection() { selection = {}; if (view) view.render(); updateStatusCounts(); }
@@ -95,7 +98,7 @@
 
   /* ---- app-level preferences (persisted on this computer, separate from the
    * workspace/undo/session) ---- */
-  var PREF_DEFAULTS = { accent: 'blue', density: 'comfortable', tempUnit: 'source', exportUnit: 'source', decimals: 3, confirmClose: true };
+  var PREF_DEFAULTS = { accent: 'blue', density: 'comfortable', tempUnit: 'source', exportUnit: 'source', decimals: 3, confirmClose: true, timeCap: null, palette: 'muted' };
   var Prefs = {
     data: Object.assign({}, PREF_DEFAULTS),
     load: function () { try { var s = localStorage.getItem('thermoscope.prefs'); if (s) Object.assign(this.data, JSON.parse(s)); } catch (e) {} },
@@ -119,6 +122,7 @@
     root.setProperty('--accent-weak', 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',' + (theme === 'dark' ? 0.20 : 0.12) + ')');
     root.setProperty('--accent-text', base);
     document.documentElement.setAttribute('data-density', Prefs.data.density);
+    Theme.setVariant(Prefs.data.palette);
   }
 
   /* ---- temperature unit conversion (display + analysis; raw viewer too) ---- */
@@ -160,6 +164,23 @@
     return out;
   }
   function displayUnit(rawUnit) { var c = activeConversion(); return c ? '°' + c.target : (rawUnit || ''); }
+
+  /* Data time cap: the graph (and analysis) only plot up to (trial start + cap)
+   * seconds. Trial start is the trial-window offset for that experiment, else 0.
+   * The raw-data viewer is unaffected — it reads store.data directly. */
+  function capCutoff(expNumber) {
+    var cap = Prefs.data.timeCap;
+    if (cap == null || !(cap > 0)) return Infinity;
+    var off = 0;
+    if (expNumber != null) { var tt = store.state.trialOffsets['E' + expNumber]; if (tt && tt.offset) off = tt.offset; }
+    return off + cap;
+  }
+  function applyCap(xs, ys, expNumber) {
+    var cut = capCutoff(expNumber);
+    if (!isFinite(cut) || !xs.length || xs[xs.length - 1] <= cut) return { xs: xs, ys: ys };
+    var i = 0, n = xs.length; while (i < n && xs[i] <= cut) i++;
+    return { xs: xs.slice(0, i), ys: ys.slice(0, i) };
+  }
   function currentUnit() {
     var c = activeConversion(); if (c) return '°' + c.target;
     var s = seriesForCurrentGraph(); for (var i = 0; i < s.length; i++) if (s[i].unit) return s[i].unit;
@@ -278,8 +299,11 @@
     return { r: (r + m) * 255, g: (g + m) * 255, b: (b + m) * 255 };
   }
 
-  var PRESETS = Theme.SERIES.light.concat(['#000000', '#404040', '#808080', '#b0b0b0', '#ffffff',
-    '#c0392b', '#16a085', '#2980b9', '#8e44ad', '#f39c12']);
+  // Recommended presets follow the active palette variant (muted/vibrant) and the
+  // current theme, plus a neutral ramp.
+  function colorPresets() {
+    return Theme.SERIES[store.state.theme].concat(['#000000', '#404040', '#808080', '#b0b0b0', '#ffffff']);
+  }
 
   var openColorPop = null;
   function openColorPicker(anchor, current, cb) {
@@ -302,7 +326,7 @@
     var gIn = el('input', { class: 'input mono cp-rgb', type: 'number', min: '0', max: '255' });
     var bIn = el('input', { class: 'input mono cp-rgb', type: 'number', min: '0', max: '255' });
 
-    PRESETS.forEach(function (hex) {
+    colorPresets().forEach(function (hex) {
       var b = el('button', { class: 'cp-preset', style: 'background:' + hex, title: hex });
       b.addEventListener('click', function () { var c = hexToRgb(hex); hsv = rgbToHsv(c.r, c.g, c.b); paint(true); });
       presets.appendChild(b);
@@ -373,6 +397,78 @@
     o.commit();
     if (o.el._cleanup) o.el._cleanup();
     o.el.remove();
+  }
+
+  /* Generic anchored popover (opens ON a button, not a central modal). buildFn
+   * receives the panel + a close() it can call. Closes on outside click / Esc. */
+  var openPop = null;
+  function closePop() { if (openPop) { var p = openPop; openPop = null; if (p._cleanup) p._cleanup(); p.remove(); } }
+  function openAnchoredPop(anchor, buildFn) {
+    closePop();
+    var pop = el('div', { class: 'pop-panel' });
+    buildFn(pop, closePop);
+    document.body.appendChild(pop);
+    var ar = anchor.getBoundingClientRect();
+    var pw = pop.offsetWidth || 240, ph = pop.offsetHeight || 200;
+    var left = Math.min(ar.left, window.innerWidth - pw - 8);
+    var top = ar.bottom + 6; if (top + ph > window.innerHeight - 8) top = Math.max(8, ar.top - ph - 6);
+    pop.style.left = Math.max(8, left) + 'px'; pop.style.top = top + 'px';
+    openPop = pop;
+    setTimeout(function () { document.addEventListener('mousedown', outside); document.addEventListener('keydown', onEsc); }, 0);
+    function outside(e) { if (!pop.contains(e.target) && e.target !== anchor && !anchor.contains(e.target)) closePop(); }
+    function onEsc(e) { if (e.key === 'Escape') closePop(); }
+    pop._cleanup = function () { document.removeEventListener('mousedown', outside); document.removeEventListener('keydown', onEsc); };
+    return pop;
+  }
+
+  // Switch the whole palette between muted and vibrant. Automatic (unoverridden)
+  // colors update live; existing per-dataset overrides are left as chosen.
+  function setPaletteVariant(v) {
+    Prefs.set('palette', v);
+    Theme.setVariant(v);
+    updateAll();
+  }
+
+  /* The Color Manager: professional arrangements for the dataset colors. */
+  function openColorManager(anchor) {
+    openAnchoredPop(anchor, function (pop) {
+      pop.appendChild(el('div', { class: 'pop-title', text: 'Color manager' }));
+      pop.appendChild(el('p', { class: 'pop-hint', text: 'Arrange dataset colors to sort a crowded graph. Choices are saved per dataset and kept until you change them.' }));
+
+      pop.appendChild(el('div', { class: 'pop-cap', text: 'Palette' }));
+      pop.appendChild(segmented([{ value: 'muted', label: 'Muted' }, { value: 'vibrant', label: 'Vibrant' }], Prefs.data.palette, setPaletteVariant));
+
+      pop.appendChild(el('div', { class: 'pop-cap', text: 'Sort colors by' }));
+      var grid = el('div', { class: 'pop-grid' });
+      grid.appendChild(el('button', { class: 'btn sm', text: 'By trial', title: 'Each trial gets one hue; each sensor a deeper shade of it (AI0 brightest). Groups a trial’s sensors together.', onclick: recolorByTrial }));
+      grid.appendChild(el('button', { class: 'btn sm', text: 'By sensor', title: 'Each sensor gets one hue; each trial a deeper shade of it. Groups a sensor across trials together.', onclick: recolorBySensor }));
+      pop.appendChild(grid);
+
+      pop.appendChild(el('div', { class: 'pop-cap', text: 'Separate what’s shown' }));
+      pop.appendChild(el('button', { class: 'btn sm block', html: Icons.palette + ' Recolor visible', title: 'Give every currently-visible dataset a distinct, well-separated color. Hidden data is left alone; anything you unhide or add later keeps its color until you press this again.', onclick: recolorVisible }));
+
+      pop.appendChild(el('div', { class: 'pop-sep' }));
+      pop.appendChild(el('button', { class: 'btn sm block ghost', html: Icons.undo + ' Reset to automatic', title: 'Clear all color overrides and return to the automatic distinct palette.', onclick: recolorAutomatic }));
+    });
+  }
+
+  /* Color manager for Custom mode: operates on the hand-picked overlay. Raw items
+   * follow their dataset color by default; "Recolor items" gives the whole overlay
+   * distinct colors, and any item can be recolored from its swatch. */
+  function openCustomColorManager(anchor) {
+    openAnchoredPop(anchor, function (pop) {
+      pop.appendChild(el('div', { class: 'pop-title', text: 'Color manager' }));
+      pop.appendChild(el('p', { class: 'pop-hint', text: 'Colors for this custom overlay. Raw traces follow their dataset color; click any swatch in the list to override an item.' }));
+
+      pop.appendChild(el('div', { class: 'pop-cap', text: 'Palette' }));
+      pop.appendChild(segmented([{ value: 'muted', label: 'Muted' }, { value: 'vibrant', label: 'Vibrant' }], Prefs.data.palette, setPaletteVariant));
+
+      pop.appendChild(el('div', { class: 'pop-cap', text: 'Separate what’s shown' }));
+      pop.appendChild(el('button', { class: 'btn sm block', html: Icons.palette + ' Recolor items', title: 'Give every item in this overlay a distinct, well-separated color.', onclick: recolorCustomItems }));
+
+      pop.appendChild(el('div', { class: 'pop-sep' }));
+      pop.appendChild(el('button', { class: 'btn sm block ghost', html: Icons.undo + ' Reset to automatic', title: 'Clear the color overrides for this overlay.', onclick: resetCustomColors }));
+    });
   }
   function bindDrag(elm, onMove) {
     elm.addEventListener('mousedown', function (e) {
@@ -491,20 +587,21 @@
   function graphSeries() {
     var s = store.state;
     if (s.graphMode === 'COMPARE_EXP') return customSeries();
-    // Colours are stable per-dataset (customColor, else a distinct default from a
-    // palette sized to the whole dataset count), so a dataset keeps its colour in
-    // every mode and the colour-code button's choices carry across views.
+    // Colors are stable per-dataset (customColor, else a distinct default from a
+    // palette sized to the whole dataset count), so a dataset keeps its color in
+    // every mode and the color-code button's choices carry across views.
     return store.currentDatasetIds().map(function (id) {
       var d = DataModel.resolveDatasetData(store.data.experiments, id);
       if (!d) return null;
       var st = store.style(id);
-      return { id: id, xs: d.xs, rawYs: convYs(d.ys), unit: displayUnit(d.unit),
+      var cap = applyCap(d.xs, convYs(d.ys), d.experiment);
+      return { id: id, xs: cap.xs, rawYs: cap.ys, unit: displayUnit(d.unit),
         color: store.resolveColor(id),
         shape: st.shape, visibility: st.visibility,
         label: DataModel.datasetLabelForMode(store.data.experiments, id, s.graphMode) };
     }).filter(Boolean);
   }
-  /* id -> plotted colour for the current graph (used by side-panel swatches so
+  /* id -> plotted color for the current graph (used by side-panel swatches so
    * they always match the line on the chart). */
   function graphColorMap() { var m = {}; graphSeries().forEach(function (x) { m[x.id] = x.color; }); return m; }
   function graphMetaMap() { var m = {}; graphSeries().forEach(function (x) { m[x.id] = x; }); return m; }
@@ -515,38 +612,76 @@
     store.commit('visibility-all');
   }
 
-  /* Colour-code: give each trial-run its own hue (rainbow order) and shade each
-   * sensor progressively darker (AI0 the brightest/most vibrant, the last sensor
-   * the darkest but still clearly the same hue). Writes a customColor to every
-   * dataset, so pressing it again snaps back to these colours even after manual
-   * edits. Colours are stored per-dataset, so they persist across every mode. */
-  function colorCodeDatasets() {
-    var pairs = [];
-    store.data.experiments.forEach(function (exp) {
-      exp.trials.forEach(function (tr) { pairs.push({ exp: exp, tr: tr }); });
+  /* ---------------------------------------------------------------------------
+   * Color arrangements (the Color Manager). Each writes an `arrange` spec (not a
+   * fixed hex) to the affected datasets, so the choice is stable across every mode,
+   * survives new data being added/unhidden until re-applied, AND still follows the
+   * muted/vibrant palette switch. Applying an arrangement clears any hand-set color
+   * (the arrangement buttons override manual choices; only the palette switch
+   * leaves manual colors alone). ------------------------------------------------ */
+
+  // Reset to the automatic distinct colors (clears manual + arranged overrides).
+  function recolorAutomatic() {
+    Object.keys(store.state.datasetStyles).forEach(function (id) {
+      var st = store.state.datasetStyles[id];
+      if (st.customColor || st.arrange) store.setDatasetStyle(id, { customColor: null, arrange: null });
     });
+    store.commit('recolor-auto');
+    toast('Reset to automatic colors');
+  }
+
+  // Spread the palette across only the currently-visible datasets so a crowded
+  // graph's active traces are maximally separated. Hidden datasets are untouched,
+  // and anything unhidden/added later keeps its color until this is run again.
+  function recolorVisible() {
+    var ids = store.currentDatasetIds().filter(function (id) { return store.style(id).visibility !== 'off'; });
+    if (!ids.length) { toast('No visible datasets to recolor'); return; }
+    ids.forEach(function (id, i) { store.setDatasetStyle(id, { customColor: null, arrange: { type: 'slot', slot: i, total: ids.length } }); });
+    store.commit('recolor-visible');
+    toast('Recolored ' + ids.length + ' visible dataset' + (ids.length === 1 ? '' : 's'));
+  }
+
+  // Group by trial: each trial-run gets its own hue, each sensor a deeper shade of
+  // it (AI0 brightest). Ties every sensor of a trial together visually.
+  function recolorByTrial() {
+    var pairs = [];
+    store.data.experiments.forEach(function (exp) { exp.trials.forEach(function (tr) { pairs.push({ exp: exp, tr: tr }); }); });
     var T = pairs.length || 1;
     pairs.forEach(function (pr, ti) {
-      var hue = (ti * 360 / T) % 360;                 // rainbow across the trials
-      var chans = pr.exp.channelNames, S = chans.length;
+      var hue = (ti * 360 / T) % 360, chans = pr.exp.channelNames, S = chans.length;
       pr.tr.channels.forEach(function (ch) {
         var s = chans.indexOf(ch.name); if (s < 0) s = 0;
-        var frac = S > 1 ? s / (S - 1) : 0;            // 0 = first sensor (brightest)
-        var light = 60 - 32 * frac;                   // 60% -> 28%
-        var sat = 92 - 20 * frac;                     // vivid, easing off slightly when dark
-        var hex = Theme.hslToHex(hue, sat, light);
-        store.setDatasetStyle(DataModel.datasetId(pr.exp.number, pr.tr.trial, ch.name), { customColor: hex });
+        store.setDatasetStyle(DataModel.datasetId(pr.exp.number, pr.tr.trial, ch.name), { customColor: null, arrange: { type: 'hue', hue: hue, frac: S > 1 ? s / (S - 1) : 0 } });
       });
     });
-    store.commit('color-code');
-    toast('Colour-coded by trial and sensor');
+    store.commit('recolor-trial');
+    toast('Grouped by trial');
+  }
+
+  // Group by sensor: each sensor gets its own hue, each trial a deeper shade of it
+  // (first trial brightest). Ties the same sensor across trials together visually.
+  function recolorBySensor() {
+    var sensors = allSensorNames(), S = sensors.length || 1;
+    store.data.experiments.forEach(function (exp) {
+      var trials = DataModel.trialNumbers(exp), Tn = trials.length;
+      exp.trials.forEach(function (tr) {
+        var ti = trials.indexOf(tr.trial); if (ti < 0) ti = 0;
+        tr.channels.forEach(function (ch) {
+          var si = sensors.indexOf(ch.name); if (si < 0) si = 0;
+          var hue = (si * 360 / S) % 360;
+          store.setDatasetStyle(DataModel.datasetId(exp.number, tr.trial, ch.name), { customColor: null, arrange: { type: 'hue', hue: hue, frac: Tn > 1 ? ti / (Tn - 1) : 0 } });
+        });
+      });
+    });
+    store.commit('recolor-sensor');
+    toast('Grouped by sensor');
   }
 
   /* Smoothing is expensive and graphSeries() runs several times per render, so
    * cache the Savitzky/Gaussian result by (id, strength, unit, length). Cleared
    * whenever new data is loaded. */
   var _smoothCache = {};
-  function clearCaches() { _smoothCache = {}; }
+  function clearCaches() { _smoothCache = {}; invalidateExtent(); viewByGraph = {}; viewKeyState = null; }
   function smoothedYs(id, rawYs, strength) {
     var key = id + '|' + strength + '|' + Prefs.data.tempUnit + '|' + rawYs.length;
     if (_smoothCache[key]) return _smoothCache[key];
@@ -604,6 +739,7 @@
     var s = store.state;
     if (!s.custom) s.custom = { selected: null };
     if (s.custom.selected == null) { var first = allSensorNames()[0]; s.custom.selected = first ? rawKeysForSensor(first) : []; }
+    if (!s.custom.colors) s.custom.colors = {};   // custom item key -> {type:'manual',hex} | {type:'slot',slot,total}
     return s.custom;
   }
   function allRawKeys() {
@@ -637,21 +773,39 @@
     var avg = Analysis.averageSeries(arr);
     return { xs: avg.xs, ys: avg.ys, unit: unit, label: 'E' + ea + ' avg · ' + sen };
   }
-  /* Colour for a custom item. Raw items reuse the underlying dataset's stable
-   * colour (so custom mode matches every other view and the colour-code button);
-   * per-experiment averages get their own stable distinct colour. */
+  /* Color for a custom item. A per-item override (set here in Custom mode) wins;
+   * otherwise raw items reuse the underlying dataset's stable color (so they match
+   * every other view), and per-experiment averages get a distinct auto color. All
+   * of these follow the muted/vibrant palette switch. */
   function customKeyColor(key) {
+    var ov = customState().colors[key];
+    if (ov) {
+      if (ov.type === 'manual') return ov.hex;
+      if (ov.type === 'slot') { var ps = Theme.scale(store.state.theme, Math.max(1, ov.total)); return ps[((ov.slot % ps.length) + ps.length) % ps.length]; }
+    }
     var p = key.split('|');
     if (p[0] === 'R') return store.resolveColor(DataModel.datasetId(+p[1].slice(1), +p[2].slice(1), p[3]));
     var avg = allAvgKeys(), idx = avg.indexOf(key), nRaw = allRawKeys().length;
     var pal = Theme.scale(store.state.theme, nRaw + avg.length);
     return pal[nRaw + (idx < 0 ? 0 : idx)];
   }
+  function setCustomItemColor(key, hex) { customState().colors[key] = { type: 'manual', hex: hex }; }
+  // Give the selected custom items distinct, well-separated colors (variant-aware).
+  function recolorCustomItems() {
+    var sel = customState().selected;
+    if (!sel.length) { toast('Nothing to recolor'); return; }
+    sel.forEach(function (key, i) { customState().colors[key] = { type: 'slot', slot: i, total: sel.length }; });
+    store.commit('custom-recolor');
+    toast('Recolored ' + sel.length + ' item' + (sel.length === 1 ? '' : 's'));
+  }
+  function resetCustomColors() { customState().colors = {}; store.commit('custom-recolor-reset'); toast('Reset to automatic colors'); }
   function customSeries() {
     var out = [];
     customState().selected.forEach(function (key) {
       var d = customResolve(key); if (!d) return;
-      out.push({ id: 'CUST_' + key, xs: d.xs, rawYs: convYs(d.ys), unit: displayUnit(d.unit),
+      var expNum = +key.split('|')[1].slice(1);
+      var cap = applyCap(d.xs, convYs(d.ys), expNum);
+      out.push({ id: 'CUST_' + key, xs: cap.xs, rawYs: cap.ys, unit: displayUnit(d.unit),
         color: customKeyColor(key), shape: 'circle', visibility: 'on', label: d.label });
     });
     return out;
@@ -714,7 +868,7 @@
       if (!pts.length) return;
       var label = ellipsize(statDisplayName(stat), 44);
       if (stat.kind === 'meanstd') {
-        // Mean (solid) plus ±1 std-dev drawn as a dotted band in the same colour.
+        // Mean (solid) plus ±1 std-dev drawn as a dotted band in the same color.
         var meanA = Analysis.aggregateSeries(pts, 'mean');
         var sdA = Analysis.aggregateSeries(pts, 'stddev');
         var n = meanA.ys.length, up = new Float64Array(n), lo = new Float64Array(n);
@@ -840,7 +994,7 @@
   /* ============================ LEFT PANEL ============================== */
   /* Rebuilding a side panel wholesale would reset its scroll to the top on every
    * click. preserveScroll() captures scrollTop, lets the panel rebuild, then
-   * restores it — so toggling visibility, colours, etc. never jumps the view. */
+   * restores it — so toggling visibility, colors, etc. never jumps the view. */
   function preserveScroll(host, build) {
     var top = host.scrollTop;
     build();
@@ -908,15 +1062,17 @@
     if (s.graphMode === 'COMPARE_EXP') return;
     host.appendChild(section('Data Series', function (body) {
       var ids = store.currentDatasetIds();
-      var colorMap = graphColorMap();   // actual plotted colours (stable per-dataset + overrides)
+      var colorMap = graphColorMap();   // actual plotted colors (stable per-dataset + overrides)
 
-      // Bulk actions: set visibility for every dataset at once, plus a one-shot
-      // colour-code that hues by trial and shades by sensor.
+      // Bulk actions: set visibility for every dataset at once, plus the color
+      // manager (opens an anchored popover with the color arrangements).
       var bulk = el('div', { class: 'ds-bulk' });
       bulk.appendChild(el('button', { class: 'btn xs', text: 'Show all', title: 'Show every dataset', onclick: function () { setAllVisibility('on'); } }));
       bulk.appendChild(el('button', { class: 'btn xs', text: 'Dim all', title: 'Dim every dataset (kept faint in the background)', onclick: function () { setAllVisibility('dim'); } }));
       bulk.appendChild(el('button', { class: 'btn xs', text: 'Hide all', title: 'Hide every dataset', onclick: function () { setAllVisibility('off'); } }));
-      bulk.appendChild(el('button', { class: 'btn xs', html: Icons.palette + ' Colour-code', title: 'Assign each trial a hue and each sensor a darker shade of it (AI0 brightest). Press again to reset to these colours.', onclick: colorCodeDatasets }));
+      var cmBtn = el('button', { class: 'btn xs', html: Icons.palette + ' Colors', title: 'Open the color manager' });
+      cmBtn.addEventListener('click', function () { openColorManager(cmBtn); });
+      bulk.appendChild(cmBtn);
       body.appendChild(bulk);
 
       var list = el('div', { class: 'ds-list' });
@@ -926,10 +1082,10 @@
         var label = DataModel.datasetLabelForMode(store.data.experiments, id, s.graphMode) + '  ·  ' + (d ? d.label : id);
         var row = el('div', { class: 'ds-row ' + st.visibility });
         var curColor = colorMap[id] || store.resolveColor(id);
-        var swatch = el('button', { class: 'swatch', title: 'Change colour', style: 'background:' + curColor });
+        var swatch = el('button', { class: 'swatch', title: 'Change color', style: 'background:' + curColor });
         swatch.addEventListener('click', function () {
           openColorPicker(swatch, colorMap[id] || store.resolveColor(id), function (hex, done) {
-            store.setDatasetStyle(id, { customColor: hex });
+            store.setDatasetStyle(id, { customColor: hex, arrange: null });   // hand-set: fixed
             swatch.style.background = hex; view.render();
             if (done) store.commit('color');
           });
@@ -956,14 +1112,14 @@
   /* Custom overlay builder: presets + per-experiment checkbox groups. */
   function buildCustomOverlay(body) {
     var sel = customState().selected, selSet = {};
-    // The graph colours a custom series by its position in the selection, so mirror
+    // The graph colors a custom series by its position in the selection, so mirror
     // that here (colorByKey) — the picker swatch then matches the plotted line.
     var colorByKey = {};
     sel.forEach(function (k) { selSet[k] = 1; colorByKey[k] = customKeyColor(k); });
     var sensors = allSensorNames();
     var single = sensors.length <= 1;
 
-    body.appendChild(el('p', { class: 'hint', text: 'Check any trials, sensors, or per-experiment averages to overlay. The buttons below toggle a whole group on or off. Colors are assigned automatically.' }));
+    body.appendChild(el('p', { class: 'hint', text: 'Check any trials, sensors, or per-experiment averages to overlay. The buttons below toggle a whole group on or off. Click a swatch to recolor an item, or open the color manager.' }));
 
     // preset toggles: highlighted when that group is fully on; click adds it (or
     // removes it if already fully on). "Clear" is a one-shot reset.
@@ -976,6 +1132,9 @@
     if (!single) sensors.forEach(function (sn) { presets.appendChild(toggleBtn(sn, rawKeysForSensor(sn), 'Toggle every trial of ' + sn)); });
     presets.appendChild(toggleBtn('Averages', allAvgKeys(), 'Toggle the per-experiment average of each sensor'));
     presets.appendChild(el('button', { class: 'btn sm', text: 'Clear', title: 'Remove everything', onclick: function () { setCustomSelected([]); } }));
+    var ccm = el('button', { class: 'btn sm', html: Icons.palette + ' Colors', title: 'Open the color manager for this overlay' });
+    ccm.addEventListener('click', function () { openCustomColorManager(ccm); });
+    presets.appendChild(ccm);
     body.appendChild(presets);
 
     // per-experiment checkbox groups
@@ -1016,8 +1175,20 @@
   function customCheck(key, label, on, swatchColor, isAvg) {
     var cb = el('input', { type: 'checkbox' }); cb.checked = on;
     cb.addEventListener('change', function () { toggleCustom(key, cb.checked); });
-    var sw = swatchColor ? el('span', { class: 'tt-swatch', style: 'background:' + swatchColor })
-      : el('span', { class: 'tt-swatch hollow' });   // not graphed yet -> no colour
+    var sw;
+    if (swatchColor) {
+      // selected -> a live swatch you can click to recolor this item
+      sw = el('span', { class: 'tt-swatch clickable', title: 'Change color', style: 'background:' + swatchColor });
+      sw.addEventListener('click', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        openColorPicker(sw, swatchColor, function (hex, done) {
+          setCustomItemColor(key, hex); sw.style.background = hex; view.render();
+          if (done) store.commit('custom-color');
+        });
+      });
+    } else {
+      sw = el('span', { class: 'tt-swatch hollow' });   // not graphed yet -> no color
+    }
     return el('label', { class: 'chk cust-item', style: 'padding:5px 4px' },
       [cb, el('span', { class: 'box', html: Icons.check }), sw, el('span', { class: isAvg ? 'cust-avg' : '', text: label })]);
   }
@@ -1110,8 +1281,38 @@
   function datasetPicker(label, selectedIds, onchange) {
     var wrap = el('div', {});
     wrap.appendChild(el('label', { style: 'display:block;font-size:11px;color:var(--text-3);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.4px', text: label }));
+
+    // Quick-select presets (like Custom mode): All / None, plus per-sensor and
+    // per-trial group toggles when the graph mixes both (Full Overview).
+    var series = graphSeries();
+    var allIds = series.map(function (m) { return m.id; });
+    var info = series.map(function (m) {
+      var d = DataModel.resolveDatasetData(store.data.experiments, m.id);
+      return { id: m.id, sensor: d ? d.channelName : null, trial: d ? d.trialNumber : null };
+    });
+    var sensors = [], trials = [];
+    info.forEach(function (x) { if (x.sensor != null && sensors.indexOf(x.sensor) < 0) sensors.push(x.sensor);
+      if (x.trial != null && trials.indexOf(x.trial) < 0) trials.push(x.trial); });
+    var presets = el('div', { class: 'row wrap', style: 'gap:5px;margin-bottom:8px' });
+    function fullyOn(ids) { return ids.length > 0 && ids.every(function (id) { return selectedIds.indexOf(id) >= 0; }); }
+    function groupBtn(text, ids, title) {
+      return el('button', { class: 'btn xs' + (fullyOn(ids) ? ' active' : ''), text: text, title: title, onclick: function () {
+        var next = selectedIds.slice();
+        if (fullyOn(ids)) next = next.filter(function (id) { return ids.indexOf(id) < 0; });
+        else ids.forEach(function (id) { if (next.indexOf(id) < 0) next.push(id); });
+        onchange(next);
+      } });
+    }
+    presets.appendChild(el('button', { class: 'btn xs', text: 'All', title: 'Select every dataset', onclick: function () { onchange(allIds.slice()); } }));
+    presets.appendChild(el('button', { class: 'btn xs', text: 'None', title: 'Clear the selection', onclick: function () { onchange([]); } }));
+    if (sensors.length > 1 && trials.length > 1) {
+      sensors.forEach(function (sn) { presets.appendChild(groupBtn(sn, info.filter(function (x) { return x.sensor === sn; }).map(function (x) { return x.id; }), 'Toggle every ' + sn)); });
+      trials.forEach(function (tn) { presets.appendChild(groupBtn('T' + tn, info.filter(function (x) { return x.trial === tn; }).map(function (x) { return x.id; }), 'Toggle all sensors of trial ' + tn)); });
+    }
+    wrap.appendChild(presets);
+
     var list = el('div', { class: 'radio-list' });
-    graphSeries().forEach(function (m) {
+    series.forEach(function (m) {
       var on = selectedIds.indexOf(m.id) >= 0;
       var cb = el('input', { type: 'checkbox' }); cb.checked = on;
       cb.addEventListener('change', function () {
@@ -1186,13 +1387,13 @@
     var wrap = el('div', {});
     wrap.appendChild(el('p', { class: 'hint', text: 'Plot the mean, median, mode, standard deviation, or a mean with a ±SD band across chosen datasets. Hover a line for its value; each line is frozen when added, so hiding a source series won’t change it.' }));
     var allIds = graphSeries().map(function (m) { return m.id; });
-    if (g.statPick == null) g.statPick = allIds.slice();
+    if (g.statPick == null) g.statPick = [];   // nothing selected by default
     g.statPick = g.statPick.filter(function (id) { return allIds.indexOf(id) >= 0; });
     wrap.appendChild(datasetPicker('Compute across', g.statPick, function (ids) { g.statPick = ids; renderRight(); }));
     var addRow = el('div', { class: 'row wrap', style: 'gap:6px;margin-top:8px' });
     [['mean', 'Mean'], ['median', 'Median'], ['mode', 'Mode'], ['stddev', 'Std Dev'], ['meanstd', 'Mean ± SD']].forEach(function (k) {
       var tip = k[0] === 'meanstd'
-        ? 'Graph the mean plus a dotted ±1 standard-deviation band, in one colour'
+        ? 'Graph the mean plus a dotted ±1 standard-deviation band, in one color'
         : 'Graph a ' + k[1] + ' line over the selected datasets';
       addRow.appendChild(el('button', { class: 'btn sm', html: Icons.plus + ' ' + k[1], title: tip,
         onclick: function () { if (!g.statPick.length) { toast('Select at least one dataset'); return; } addStat(k[0], g.statPick); } }));
@@ -1202,7 +1403,7 @@
       wrap.appendChild(capLabel('Graphed statistics', 14));
       var list = el('div', {});
       g.stats.forEach(function (stat) {
-        var sw = el('button', { class: 'swatch', title: 'Change colour', style: 'background:' + stat.color });
+        var sw = el('button', { class: 'swatch', title: 'Change color', style: 'background:' + stat.color });
         sw.addEventListener('click', function () { openColorPicker(sw, stat.color, function (h, done) { stat.color = h; sw.style.background = h; view.render(); if (done) store.commit('stat-color'); }); });
         var name = editableLabel(
           function () { return statDisplayName(stat); },
@@ -1303,6 +1504,13 @@
     if (!g.smoothDomain) g.smoothDomain = TS.freshDomain();
     wrap.appendChild(domainField(g.smoothDomain, function () { view.render(); }, function () { store.commit('smooth-domain'); }));
     wrap.appendChild(el('p', { class: 'hint', style: 'margin-top:6px', text: 'Smoothing runs over the ' + domainLabel(g.smoothDomain) + '; where the region ends, the curve blends smoothly back into the untouched raw data.' }));
+
+    // Quick enable/disable for every listed dataset at once.
+    var ids = graphSeries().map(function (m) { return m.id; });
+    var quick = el('div', { class: 'row wrap', style: 'gap:5px;margin-top:10px' });
+    quick.appendChild(el('button', { class: 'btn xs', text: 'Smooth all', title: 'Turn smoothing on for every dataset', onclick: function () { ids.forEach(function (id) { if (!g.smooth[id]) g.smooth[id] = { on: false, strength: 6 }; g.smooth[id].on = true; }); store.commit('smooth-all'); } }));
+    quick.appendChild(el('button', { class: 'btn xs', text: 'Smooth none', title: 'Turn smoothing off for every dataset', onclick: function () { ids.forEach(function (id) { if (g.smooth[id]) g.smooth[id].on = false; }); store.commit('smooth-none'); } }));
+    wrap.appendChild(quick);
 
     graphSeries().forEach(function (m) {
       var id = m.id;
@@ -1624,6 +1832,15 @@
         segmented([{ value: 1, label: '1' }, { value: 2, label: '2' }, { value: 3, label: '3' }, { value: 4, label: '4' }], Prefs.data.decimals, function (v) { Prefs.set('decimals', +v); refresh(false); })));
     }
     function buildGeneral() {
+      pane.appendChild(el('h4', { text: 'Data' }));
+      var capInput = el('input', { class: 'input mono', type: 'number', step: 'any', min: '0', placeholder: 'No cap', style: 'max-width:120px', value: Prefs.data.timeCap != null ? Prefs.data.timeCap : '' });
+      capInput.addEventListener('change', function () {
+        var v = parseFloat(capInput.value);
+        Prefs.set('timeCap', (isNaN(v) || v <= 0) ? null : v);
+        refresh(true);
+      });
+      pane.appendChild(prefRow('Plot time cap (s)', 'Only plot data up to this many seconds after each trial’s start (its trial-window offset, or 0 if none). Blank or 0 = no cap. The full data still appears in the Raw Data viewer.', capInput));
+
       pane.appendChild(el('h4', { text: 'Behavior' }));
       var cb = el('input', { type: 'checkbox' }); cb.checked = Prefs.data.confirmClose;
       cb.addEventListener('change', function () { Prefs.set('confirmClose', cb.checked); });
@@ -1987,6 +2204,8 @@
       '<div><span class="rk">Zoom X only</span><span class="rv">Ctrl + Scroll</span></div>' +
       '<div><span class="rk">Zoom Y only</span><span class="rv">Alt + Scroll</span></div>' +
       '<div><span class="rk">Pan</span><span class="rv">Drag chart</span></div>' +
+      '<div><span class="rk">Fine pan</span><span class="rv">Pan bar + arrow keys</span></div>' +
+      '<div><span class="rk">Pan without snapping</span><span class="rv">Ctrl + drag pan bar</span></div>' +
       '<div><span class="rk">Drop point / cursor</span><span class="rv">Double-click chart</span></div>' +
       '<div><span class="rk">Select a series</span><span class="rv">Ctrl + click line</span></div>' +
       '<div><span class="rk">Add to selection</span><span class="rv">Ctrl + click more</span></div>' +
@@ -2001,11 +2220,12 @@
       '<ul class="hint" style="line-height:1.7;margin-top:8px">' +
       '<li><b>Graph modes</b> — compare one sensor across trials, one trial across sensors, a full overview, or hand-pick anything in <code>Custom</code>. Sensor and trial buttons toggle series on and off.</li>' +
       '<li><b>Selecting</b> — <code>Ctrl</code>-click a line to select it (Ctrl-click more to add); the rest dim. Click an empty area to clear, or right-click for quick actions.</li>' +
+      '<li><b>Colors</b> — each series keeps a stable, distinct color across every mode. The <b>Color manager</b> (by the data list) switches between a muted and a vibrant palette, groups colors <i>by trial</i> or <i>by sensor</i>, or recolors just the visible traces so a crowded graph reads clearly. Click any swatch to choose your own.</li>' +
       '<li><b>Statistics</b> — plot the mean, median, mode, standard deviation, or a Mean&nbsp;±&nbsp;SD band across chosen datasets. Each line is frozen when added, so hiding a source trace won\'t change it. Statistics are named automatically; click a name to rename it.</li>' +
-      '<li><b>Colours</b> — each series in a view gets a distinct, well-separated colour, even with many datasets. Click any swatch to choose your own.</li>' +
+      '<li><b>Analysis tools</b> — line of best fit, min / max / mean, area under the curve, smoothing (over an optional region), manual points and labeled lines, a dual-cursor measure, and threshold crossings. Each is kept per-graph, and its dataset picker has All / None and per-group quick-select.</li>' +
+      '<li><b>Navigation</b> — scroll or the zoom buttons to zoom, drag to pan. The pan bars snap to the data edges (hold <code>Ctrl</code> to pan freely) and take arrow keys for fine control. Each graph remembers its own zoom and pan.</li>' +
       '<li><b>Renaming</b> — anything you can rename shows a small pencil on hover. Click the title on the chart to rename the graph; clear it to return to the automatic name.</li>' +
-      '<li><b>More tools</b> — line of best fit, min / max / mean, area under the curve, smoothing, manual points and lines, dual-cursor measure, and threshold crossings, all kept per-graph.</li>' +
-      '<li><b>Units &amp; export</b> — pick Celsius, Fahrenheit, or As&nbsp;Recorded for the display and CSV export under <code>Settings &rsaquo; Preferences</code>. Save PNG or SVG, or export organized CSV, from <code>Organize &amp; Export</code>.</li>' +
+      '<li><b>Units &amp; data</b> — pick Celsius, Fahrenheit, or As&nbsp;Recorded for the display and CSV export under <code>Settings &rsaquo; Preferences</code>, where a time cap can also limit how far each trial is plotted. Save PNG or SVG, or export organized CSV, from <code>Organize &amp; Export</code>.</li>' +
       '</ul>',
       actions: [{ label: 'Close', primary: true }] });
   }
@@ -2059,16 +2279,33 @@
   function onHoverEnd() { els.tooltip.style.display = 'none'; els.sbHover.innerHTML = ''; }
 
   /* ============================ PAN SLIDERS =========================== */
+  /* Full extent of everything drawn — visible series PLUS statistics lines and
+   * manual points — so a graph that shows only overlays (e.g. a Custom graph with
+   * every raw dataset unchecked, leaving just a mean) still pans and zooms
+   * correctly. Cached; invalidated whenever the workspace changes. */
+  var _extentCache = null;
+  function invalidateExtent() { _extentCache = null; }
   function dataExtent() {
+    if (_extentCache) return _extentCache;
+    var g = store.graph();
     var series = seriesForCurrentGraph();
     var xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
-    series.forEach(function (s) {
-      if (s.visibility === 'off' || !s.xs.length) return;
-      if (s.xs[0] < xMin) xMin = s.xs[0]; if (s.xs[s.xs.length - 1] > xMax) xMax = s.xs[s.xs.length - 1];
-      var st = Analysis.seriesStats(s.xs, s.ys); if (st) { if (st.min < yMin) yMin = st.min; if (st.max > yMax) yMax = st.max; }
+    function foldY(xs, ys) {
+      if (!xs || !xs.length) return;
+      var st = Analysis.seriesStats(xs, ys); if (!st) return;
+      if (xs[0] < xMin) xMin = xs[0]; if (xs[xs.length - 1] > xMax) xMax = xs[xs.length - 1];
+      if (st.min < yMin) yMin = st.min; if (st.max > yMax) yMax = st.max;
+    }
+    series.forEach(function (s) { if (s.visibility !== 'off') foldY(s.xs, s.ys); });
+    var ov = computeOverlays(series, g);
+    (ov.averageLines || []).forEach(function (a) { foldY(a.xs, a.ys); });
+    (ov.manualPoints || []).forEach(function (p) {
+      if (p.x < xMin) xMin = p.x; if (p.x > xMax) xMax = p.x;
+      if (p.y < yMin) yMin = p.y; if (p.y > yMax) yMax = p.y;
     });
     if (!isFinite(xMin)) { xMin = 0; xMax = 1; yMin = 0; yMax = 1; }
-    return { xMin: xMin, xMax: xMax, yMin: yMin, yMax: yMax };
+    _extentCache = { xMin: xMin, xMax: xMax, yMin: yMin, yMax: yMax };
+    return _extentCache;
   }
   /* Time span that EVERY graphed trial covers: [latest start, earliest end].
    * Keeps the second cursor at the last point common to all trials rather than
@@ -2110,6 +2347,7 @@
 
   /* ============================ UPDATE ALL ============================ */
   function updateAll() {
+    invalidateExtent();
     Theme.apply(store.state.theme);
     applyAppearance();
     els.themeBtn.innerHTML = store.state.theme === 'dark' ? Icons.sun : Icons.moon;
@@ -2124,7 +2362,18 @@
     else els.sbMode.innerHTML = '';
     renderLeft(); renderRight(); renderChartToolbar();
     updateStatusCounts();
-    if (view) { view._resize(); view.setAutoDirty(); view.render(); sizeYPan(); updatePanSliders(); }
+    // Per-graph zoom/pan memory: when the graph changes, stash the outgoing view
+    // and restore the incoming one (fit fresh graphs). This runs before render so
+    // switching mode/experiment/trial/sensor keeps each graph's own view.
+    var restoredView = false;
+    if (view && !nd && gk !== viewKeyState) {
+      if (viewKeyState != null) { var cv = view.getView(); viewByGraph[viewKeyState] = { v: { xMin: cv.xMin, xMax: cv.xMax, yMin: cv.yMin, yMax: cv.yMax }, auto: view.autoMode }; }
+      var saved = viewByGraph[gk];
+      if (saved) { view.setView(saved.v); view.autoMode = saved.auto; view._autoDirty = !!saved.auto; restoredView = true; }
+      else { view.autoMode = 'all'; view._autoDirty = true; }
+      viewKeyState = gk;
+    }
+    if (view) { view._resize(); if (!restoredView) view.setAutoDirty(); view.render(); sizeYPan(); updatePanSliders(); }
     if (currentTab === 'raw') renderRaw();
     if (currentTab === 'details') renderDetails();
   }
@@ -2184,13 +2433,24 @@
     // tabs
     Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (t) { t.addEventListener('click', function () { setTab(t.dataset.tab); }); });
 
-    // pan sliders
-    els.xPan.addEventListener('input', function () { if (settingSliders) return; view.panAxisTo('x', els.xPan.value / 1000, { min: dataExtent().xMin, max: dataExtent().xMax }); });
+    // pan sliders — snapping applies ONLY to mouse dragging on the bar. Arrow-key
+    // fine control (and Ctrl-held) pans freely with no snap.
+    var panFromKey = false;
+    function panOpts() { return { noSnap: panFromKey || ctrlHeld }; }
+    [els.xPan, els.yPan].forEach(function (sl) {
+      sl.addEventListener('keydown', function (e) { if (/^(Arrow|Page|Home|End)/.test(e.key)) panFromKey = true; });
+      sl.addEventListener('pointerdown', function () { panFromKey = false; });
+      sl.addEventListener('mousedown', function () { panFromKey = false; });
+    });
+    els.xPan.addEventListener('input', function () { if (settingSliders) return; view.panAxisTo('x', els.xPan.value / 1000, { min: dataExtent().xMin, max: dataExtent().xMax }, panOpts()); });
     els.xPan.addEventListener('change', function () { store.notify(); });
-    els.yPan.addEventListener('input', function () { if (settingSliders) return; view.panAxisTo('y', els.yPan.value / 1000, { min: dataExtent().yMin, max: dataExtent().yMax }); });
+    els.yPan.addEventListener('input', function () { if (settingSliders) return; view.panAxisTo('y', els.yPan.value / 1000, { min: dataExtent().yMin, max: dataExtent().yMax }, panOpts()); });
     els.yPan.addEventListener('change', function () { store.notify(); });
     if (window.ResizeObserver) new ResizeObserver(sizeYPan).observe(els.yPan.parentNode);
     window.addEventListener('resize', function () { sizeYPan(); updatePanSliders(); });
+    window.addEventListener('keydown', function (e) { if (e.key === 'Control' || e.key === 'Meta') ctrlHeld = true; });
+    window.addEventListener('keyup', function (e) { if (e.key === 'Control' || e.key === 'Meta') ctrlHeld = false; });
+    window.addEventListener('blur', function () { ctrlHeld = false; });
     sizeYPan();
 
     // keyboard

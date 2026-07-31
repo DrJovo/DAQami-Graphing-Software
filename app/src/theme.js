@@ -14,44 +14,33 @@
 (function (TS) {
   'use strict';
 
-  // Categorical series palette — a wide, professional set of well-separated hues.
-  // Ordering interleaves the colour wheel so that the first few entries (the common
-  // small-N case) are maximally distinct from one another. Colourblind-friendly
-  // pairs (blue/orange, blue/red) lead the sequence.
-  var SERIES = {
-    light: [
-      '#2f6feb', // blue
-      '#e8710a', // orange
-      '#17a34a', // green
-      '#c026d3', // magenta
-      '#0e9aad', // cyan
-      '#e02424', // red
-      '#7c3aed', // violet
-      '#6aa30d', // lime
-      '#4f46e5', // indigo
-      '#c99700', // amber
-      '#0d9488', // teal
-      '#db2777', // pink
-      '#475569', // slate
-      '#92400e', // brown
-    ],
-    dark: [
-      '#5b8dff', // blue
-      '#fb8b3d', // orange
-      '#2fbd66', // green
-      '#e05ce8', // magenta
-      '#2fc4d6', // cyan
-      '#f2555a', // red
-      '#a78bfa', // violet
-      '#9bd23a', // lime
-      '#818cf8', // indigo
-      '#e6b52e', // amber
-      '#2fd4bf', // teal
-      '#f472b6', // pink
-      '#94a3b8', // slate
-      '#c88a4a', // brown
-    ],
+  // Categorical series palette — a refined, muted, publication-quality set. The
+  // colors sit in a mid saturation/lightness band so nothing reads as neon or as
+  // near-black; each surface has its own tuning so lines stay legible on white and
+  // on the dark plot. Ordering interleaves the wheel so the first few (the common
+  // small-N case) are maximally distinct, leading with the colorblind-safe
+  // blue/orange/green trio.
+  var MUTED = {
+    light: ['#3b6ea5', '#cf8a3c', '#4e9e6b', '#8465ad', '#c25863', '#3a9aa4', '#b9993f', '#bd6fa0', '#7f9350', '#5566a8', '#a0714f', '#6d7885'],
+    dark:  ['#6d9fd6', '#e0a765', '#6cbf8c', '#a98fd0', '#db8189', '#5fbcc6', '#d2bd6a', '#d29ac0', '#a7b877', '#8593d6', '#c2926f', '#949eab'],
   };
+  // "Vibrant" is the same hues pushed to a higher saturation — noticeably more
+  // colorful, but capped so it never blows out or hurts legibility. Derived from
+  // MUTED so the two sets share identity and switching only changes intensity.
+  function vivify(hex, theme) {
+    var c = hexToHsl(hex);
+    var s = Math.min(theme === 'dark' ? 70 : 74, c.s * 1.42);
+    return hslToHex(c.h, s, c.l);
+  }
+  var VIVID = {
+    light: MUTED.light.map(function (h) { return vivify(h, 'light'); }),
+    dark:  MUTED.dark.map(function (h) { return vivify(h, 'dark'); }),
+  };
+  var PALETTES = { muted: MUTED, vibrant: VIVID };
+  var variant = 'muted';                 // active palette variant
+  function paletteFor(theme) { return (PALETTES[variant] || MUTED)[theme] || MUTED.light; }
+  // Kept for back-compat: a live view of the active variant's palette.
+  var SERIES = { get light() { return paletteFor('light'); }, get dark() { return paletteFor('dark'); } };
 
   var THEMES = {
     light: {
@@ -136,11 +125,11 @@
   };
 
   function seriesColor(theme, index) {
-    var arr = SERIES[theme] || SERIES.light;
+    var arr = paletteFor(theme);
     return arr[((index % arr.length) + arr.length) % arr.length];
   }
 
-  /* ---- HSL -> hex, for generating extra distinct hues beyond the curated set ---- */
+  /* ---- HSL <-> hex, for generating/adjusting hues beyond the curated set ---- */
   function hslToHex(h, s, l) {
     h = ((h % 360) + 360) % 360; s /= 100; l /= 100;
     var c = (1 - Math.abs(2 * l - 1)) * s;
@@ -155,32 +144,54 @@
     function hx(v) { return ('0' + Math.round((v + m) * 255).toString(16)).slice(-2); }
     return '#' + hx(r) + hx(g) + hx(b);
   }
+  function hexToHsl(hex) {
+    var r = parseInt(hex.slice(1, 3), 16) / 255, g = parseInt(hex.slice(3, 5), 16) / 255, b = parseInt(hex.slice(5, 7), 16) / 255;
+    var mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn, h = 0, l = (mx + mn) / 2;
+    var s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+    if (d) { if (mx === r) h = ((g - b) / d) % 6; else if (mx === g) h = (b - r) / d + 2; else h = (r - g) / d + 4; h *= 60; if (h < 0) h += 360; }
+    return { h: h, s: s * 100, l: l * 100 };
+  }
+  var isVibrant = function () { return variant === 'vibrant'; };
 
   /* -----------------------------------------------------------------------------
-   * scale(theme, n) — return n maximally distinct, professional colours.
-   *   • n within the curated palette  -> the curated colours (already ordered for
+   * scale(theme, n) — return n maximally distinct, professional colors.
+   *   • n within the curated palette  -> the curated colors (already ordered for
    *     maximum separation), so small graphs get the hand-tuned hues.
    *   • n beyond the palette           -> a fully generated even-hue ramp so that
-   *     large graphs still get n *distinct* colours instead of cycling/repeating.
-   * This is what makes "20 datasets" show 20 different colours rather than three
+   *     large graphs still get n *distinct* colors instead of cycling/repeating.
+   * This is what makes "20 datasets" show 20 different colors rather than three
    * of them landing on the same hue.
    * --------------------------------------------------------------------------- */
   function scale(theme, n) {
-    var arr = SERIES[theme] || SERIES.light;
+    var arr = paletteFor(theme);
     n = Math.max(1, n | 0);
     if (n <= arr.length) return arr.slice(0, n);
-    // Generate n evenly-spaced hues; alternate lightness in two bands to boost
-    // separation between neighbours once the wheel gets crowded.
-    var dark = theme === 'dark';
+    // Beyond the curated set, generate hues with the golden angle so that
+    // CONSECUTIVE indices land far apart on the wheel (not a slow sequential
+    // sweep) — crowded graphs stay distinguishable. Saturation tracks the active
+    // variant so generated colors match the curated ones.
+    var dark = theme === 'dark', vib = isVibrant();
+    var baseSat = vib ? (dark ? 62 : 62) : (dark ? 46 : 45);
     var out = [];
     for (var i = 0; i < n; i++) {
-      var hue = (i * 360 / n + 205) % 360;           // start near blue, sweep the wheel
-      var band = i % 2;
-      var light = dark ? (band ? 68 : 55) : (band ? 42 : 55);
-      var sat = dark ? 62 : 64;
-      out.push(hslToHex(hue, sat, light));
+      var hue = (i * 137.508 + 205) % 360;           // golden-angle spacing
+      var band = i % 3;
+      var light = dark ? (54 + band * 6) : (50 - band * 5);
+      out.push(hslToHex(hue, baseSat, light));
     }
     return out;
+  }
+
+  /* shade(theme, hue, frac) — a color on a single hue, from bright (frac 0) to
+   * deep (frac 1), kept professional (never neon, never near-black). Used by the
+   * "group by trial / by sensor" arrangements to tie related series to one hue. */
+  function shade(theme, hue, frac) {
+    frac = Math.max(0, Math.min(1, frac));
+    var dark = theme === 'dark', vib = isVibrant();
+    var light = dark ? (66 - 30 * frac) : (58 - 28 * frac);   // dark: 66->36, light: 58->30
+    var base = vib ? (dark ? 72 : 76) : (dark ? 58 : 62);
+    var sat = base - 10 * frac;                               // ease saturation as it deepens
+    return hslToHex(hue, sat, light);
   }
 
   function applyTheme(name) {
@@ -195,7 +206,11 @@
     SERIES: SERIES,
     seriesColor: seriesColor,
     scale: scale,
+    shade: shade,
     hslToHex: hslToHex,
+    hexToHsl: hexToHsl,
+    setVariant: function (v) { variant = (v === 'vibrant') ? 'vibrant' : 'muted'; },
+    getVariant: function () { return variant; },
     chart: function (name) { return CHART[name] || CHART.light; },
     apply: applyTheme,
   };

@@ -341,15 +341,23 @@
     },
 
     /* pan by fraction of current range: frac in [0,1] maps slider to position */
-    panAxisTo: function (axis, frac, fullRange) {
+    panAxisTo: function (axis, frac, fullRange, opts) {
       // Keep the current width; slide the view so the extremes of the bar push the
       // data fully to the opposite edge: frac 0 -> the first datapoint sits at the
       // far (right/top) edge; frac 1 -> the last datapoint sits at the near edge.
       var width = axis === 'x' ? (this.view.xMax - this.view.xMin) : (this.view.yMax - this.view.yMin);
       var lo = fullRange.min - width / 2, hi = fullRange.max + width / 2;
       var center = lo + (hi - lo) * frac;
-      if (axis === 'x') { this.view.xMin = center - width / 2; this.view.xMax = center + width / 2; }
-      else { this.view.yMin = center - width / 2; this.view.yMax = center + width / 2; }
+      var vMin = center - width / 2, vMax = center + width / 2;
+      // Snap the view edge to a data end when it lands close (unless disabled), so
+      // it's easy to line the data up flush with the graph edge.
+      if (!(opts && opts.noSnap)) {
+        var snap = width * 0.052;
+        if (Math.abs(vMin - fullRange.min) <= snap) { vMin = fullRange.min; vMax = vMin + width; }
+        else if (Math.abs(vMax - fullRange.max) <= snap) { vMax = fullRange.max; vMin = vMax - width; }
+      }
+      if (axis === 'x') { this.view.xMin = vMin; this.view.xMax = vMax; }
+      else { this.view.yMin = vMin; this.view.yMax = vMax; }
       this._exitAuto();
       this.render();
     },

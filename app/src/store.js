@@ -129,7 +129,7 @@
         this.resetHistory('load');
       }
       this._defaultStylesCache = DM.defaultStyles(experiments);
-      this._colorN = Object.keys(this._defaultStylesCache).length;   // palette size for stable default colours
+      this._colorN = Object.keys(this._defaultStylesCache).length;   // palette size for stable default colors
       this.state.dirty = false;
       this.notify();
     },
@@ -169,14 +169,24 @@
     /* ---- styles ---- */
     style: function (id) {
       var st = this.state.datasetStyles[id];
-      if (!st) { st = { colorIndex: 0, customColor: null, shape: 'circle', visibility: 'on' }; this.state.datasetStyles[id] = st; }
+      if (!st) { st = { colorIndex: 0, customColor: null, arrange: null, shape: 'circle', visibility: 'on' }; this.state.datasetStyles[id] = st; }
       return st;
     },
+    /* Colour precedence:
+     *   1. customColor  — a color the user set by hand (swatch). Fixed; the
+     *      muted/vibrant palette switch never touches it.
+     *   2. arrange      — a color chosen by the Color Manager (by trial / by
+     *      sensor / recolor visible). Stored as a recomputable spec so it tracks
+     *      the active palette variant.
+     *   3. auto         — the stable distinct default from the palette. */
     resolveColor: function (id) {
       var st = this.style(id);
       if (st.customColor) return st.customColor;
-      // Stable, distinct default: a palette sized to the total dataset count, indexed
-      // by this dataset's global slot — so a dataset keeps its colour in every mode.
+      var a = st.arrange;
+      if (a) {
+        if (a.type === 'hue') return TS.Theme.shade(this.state.theme, a.hue, a.frac);
+        if (a.type === 'slot') { var ps = TS.Theme.scale(this.state.theme, Math.max(1, a.total)); return ps[((a.slot % ps.length) + ps.length) % ps.length]; }
+      }
       var n = this._colorN || 8;
       var pal = TS.Theme.scale(this.state.theme, n);
       return pal[((st.colorIndex % n) + n) % n];

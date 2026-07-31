@@ -41,29 +41,51 @@ no exe, but the same feel. (See "About a `.exe`" below for the trade-offs.)
    per-trial detail header.
 
 3. **Graph & analyze** in the main workspace:
-   - **Graph modes** — *Compare Trials* (one sensor across trials), *Compare
-     Sensors* (all sensors of one trial), *Full Overview*, and *Compare
-     Experiments*.
+   - **Graph modes** — *One Sensor · All Trials*, *One Trial · All Sensors*,
+     *Full Overview*, and *Custom*, where you hand-pick any trials, sensors, or
+     per-experiment averages — even across experiments — to overlay. Sensor and
+     trial buttons toggle series on and off quickly.
+   - **Data series** — show, dim, or hide each trace (or all at once), and set
+     scatter shapes. The **Color manager** keeps a crowded graph readable: switch
+     between a muted and a vibrant palette, group colors *by trial* or *by sensor*
+     (one hue per group, shaded per member), or *recolor visible* to give the
+     traces currently on screen the most distinct colors. Every color is stable
+     per dataset and carries across all modes; click any swatch to set your own.
+   - **Selection** — Ctrl-click a line to select it (Ctrl-click more to add); the
+     rest dim so the selection stands out. Right-click for quick actions such as
+     averaging or hiding the selection.
    - **Trial window** — enter a start offset and duration to mark where a trial
      begins/ends (subtle guide lines; data is never deleted) and to power the
      *Fit Trial Window* auto-scale.
    - **Navigation** — scroll to zoom both axes into the cursor, **Ctrl+scroll** for
-     X only, **Alt+scroll** for Y only, drag to pan, or use the X/Y pan sliders.
-     *Fit* toggles auto-scale between all data and the trial window.
+     X only, **Alt+scroll** for Y only, the zoom buttons above the chart, or drag
+     to pan. The X/Y pan sliders snap to the data edges (hold **Ctrl** to pan
+     freely) and take arrow keys for fine control. Each graph remembers its own
+     zoom/pan, so switching between graphs and back returns you where you left off.
+   - **Naming** — click the title on the chart to rename the graph; clear it to
+     return to the automatic name.
    - **Analysis tools** (right panel, per-graph — they never bleed between graphs):
-     Average, Min/Max/Mean, Area under curve (with a choice of integration
-     domain), Line of best fit, Gaussian smoothing + between-sample prediction,
-     Desmos-style manual plotting (`(2, 7)`, `x = 5`, `y = 30` — draggable
-     points, labeled), a dual-cursor Δ measure, and threshold-crossing times.
-   - **Hover** anywhere on a trace (or the average line) to read time, temperature,
-     and the local rate (d/dt).
+     Statistics (mean, median, mode, standard deviation, or a mean with a ±SD
+     band — each frozen when added and named automatically, so hiding a source
+     trace never shifts it), Min/Max/Mean, Area under curve, Line of best fit,
+     Gaussian smoothing over an optional region (blended back into the raw data at
+     its edges) with between-sample prediction, manual plotting (`(2, 7)`,
+     `x = 5`, `y = 30` — draggable points and labeled reference lines), a
+     dual-cursor Δ measure, and threshold-crossing times (every crossing listed
+     with its direction). Each tool's picker has All / None and per-group
+     quick-select buttons.
+   - **Hover** anywhere on a trace (or a statistics line) to read time,
+     temperature, and the local rate (d/dt).
 
 4. **Export** the graph as **PNG** (1×–4×) or **SVG** (vector), and **Save/Load
    Session** to keep your styling and analysis (choose to include all analysis,
    just manual annotations, or none).
 
-Dark/light theme, undo/redo (Ctrl+Z / Ctrl+Y), and an unsaved-changes warning are
-all built in.
+**Preferences** (Settings → Preferences) cover the temperature unit for both the
+display and the exported CSV (Celsius, Fahrenheit, or As Recorded), decimal
+precision, accent color, interface density, and a data time cap that limits how
+far each trial is plotted while leaving the Raw Data viewer untouched. Dark/light
+theme, undo/redo (Ctrl+Z / Ctrl+Y), and an unsaved-changes warning are all built in.
 
 ---
 
@@ -91,7 +113,7 @@ app/
   index.html          dev shell (loads src/* individually)
   build.py            inlines everything -> ../ThermoScope.html
   src/
-    theme.js          color tokens (light/dark) + validated series palette
+    theme.js          color tokens (light/dark) + muted/vibrant series palettes
     parser.js         DAQami CSV -> structured trial (clock/seconds, channels, BOM)
     datamodel.js      experiments/trials/datasets, graph modes, default styles
     analysis.js       interpolation, PCHIP, Gaussian smoothing, regression, area, …

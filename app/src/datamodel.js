@@ -78,7 +78,8 @@
           var id = datasetId(exp.number, tr.trial, ch.name);
           styles[id] = {
             colorIndex: i,   // global, stable index into a palette sized to the dataset count
-            customColor: null,
+            customColor: null,  // hand-set color (fixed); null = follow arrange/auto
+            arrange: null,      // Color Manager assignment: {type:'hue',hue,frac} | {type:'slot',slot,total}
             shape: SHAPES[i % SHAPES.length],
             visibility: 'on', // 'on' | 'dim' | 'off'
             unit: ch.unit,
