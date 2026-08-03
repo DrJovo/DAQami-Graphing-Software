@@ -319,6 +319,185 @@
     return { xs: xs, ys: ys };
   }
 
+  /* ---------------------------------------------------------------------------
+   * Exponential (Newton's-law) fit:  T(t) = Tinf + (T0 - Tinf) * e^(-(t-t0)/tau)
+   *
+   * Because real thermocouple runs are noisy and epoxy curing is exothermic (so a
+   * run may rise, peak, then fall), the fit is done over a chosen slice and takes
+   * a direction hint and an optional fixed asymptote:
+   *   opts.direction : 'cooling' (decays to Tinf below) | 'heating' (rises to Tinf
+   *                    above) | 'auto' (pick by net change over the slice)
+   *   opts.baseline  : number  — fix Tinf to this value (e.g. ambient); else it is
+   *                    estimated by a search that maximises the linearised R².
+   * Method: for a given Tinf the model linearises to  ln|T - Tinf| = a + b·t, a
+   * plain regression, with tau = -1/b. When Tinf is free we scan candidate
+   * asymptotes and keep the best R². Returns null if it can't fit.
+   * ------------------------------------------------------------------------- */
+  function expFit(xs, ys, opts) {
+    opts = opts || {};
+    var pts = [];
+    for (var i = 0; i < xs.length; i++) { if (!isNaN(xs[i]) && !isNaN(ys[i])) pts.push([xs[i], ys[i]]); }
+    if (pts.length < 4) return null;
+    var t0 = pts[0][0], y0 = pts[0][1], yEnd = pts[pts.length - 1][1];
+    var lo = Infinity, hi = -Infinity;
+    pts.forEach(function (p) { if (p[1] < lo) lo = p[1]; if (p[1] > hi) hi = p[1]; });
+    if (hi - lo < 1e-9) return null;
+    var dir = opts.direction;
+    if (dir !== 'heating' && dir !== 'cooling') dir = (yEnd >= y0) ? 'heating' : 'cooling';
+    var s = dir === 'heating' ? -1 : 1;   // sign of (T - Tinf): heating -> below asymptote
+
+    function tryTinf(Tinf) {
+      // regress z = ln(s*(y - Tinf)) on t; needs s*(y-Tinf) > 0 for all used points
+      var n = 0, sx = 0, sz = 0, sxx = 0, sxz = 0, szz = 0, used = 0;
+      for (var k = 0; k < pts.length; k++) {
+        var d = s * (pts[k][1] - Tinf);
+        if (d <= 1e-6) continue;
+        var z = Math.log(d), x = pts[k][0];
+        n++; sx += x; sz += z; sxx += x * x; sxz += x * z; szz += z * z; used++;
+      }
+      if (n < 3) return null;
+      var den = n * sxx - sx * sx; if (den === 0) return null;
+      var b = (n * sxz - sx * sz) / den;
+      if (b >= 0) return null;                       // must decay in z (real time constant)
+      var a = (sz - b * sx) / n;
+      var r = (n * sxz - sx * sz) / Math.sqrt(den * (n * szz - sz * sz));
+      return { Tinf: Tinf, a: a, b: b, r2: r * r, used: used };
+    }
+
+    var best = null;
+    if (typeof opts.baseline === 'number' && isFinite(opts.baseline)) {
+      best = tryTinf(opts.baseline);
+    } else {
+      // scan asymptotes just beyond the data on the appropriate side
+      var span = hi - lo, margin = Math.max(span * 0.02, 1e-3);
+      var from, to;
+      if (dir === 'heating') { from = hi + margin; to = hi + span * 1.5 + margin; }   // above data
+      else { from = lo - span * 1.5 - margin; to = lo - margin; }                      // below data
+      var STEPS = 60;
+      for (var q = 0; q <= STEPS; q++) {
+        var cand = from + (to - from) * (q / STEPS);
+        var r = tryTinf(cand);
+        if (r && (!best || r.r2 > best.r2)) best = r;
+      }
+    }
+    if (!best) return null;
+    var tau = -1 / best.b;
+    if (!(tau > 0) || !isFinite(tau)) return null;
+    // y(x) = Tinf + s*exp(a + b*x)
+    return {
+      Tinf: best.Tinf, a: best.a, b: best.b, s: s, tau: tau, r2: best.r2,
+      direction: dir, T0: best.Tinf + s * Math.exp(best.a + best.b * t0), tStart: t0,
+      halfLife: tau * Math.LN2, used: best.used,
+    };
+  }
+  function expEval(fit, x) { return fit.Tinf + fit.s * Math.exp(fit.a + fit.b * x); }
+
+  /* Solve a small dense linear system M·x = b by Gaussian elimination with partial
+   * pivoting. M is n×n (row-major arrays), b length n. Returns x, or null. */
+  function gaussSolve(M, b) {
+    var n = b.length, i, j, k;
+    var A = M.map(function (r, idx) { return r.slice().concat([b[idx]]); });
+    for (i = 0; i < n; i++) {
+      var piv = i; for (k = i + 1; k < n; k++) if (Math.abs(A[k][i]) > Math.abs(A[piv][i])) piv = k;
+      if (Math.abs(A[piv][i]) < 1e-12) return null;
+      var tmp = A[i]; A[i] = A[piv]; A[piv] = tmp;
+      for (k = i + 1; k < n; k++) {
+        var f = A[k][i] / A[i][i];
+        for (j = i; j <= n; j++) A[k][j] -= f * A[i][j];
+      }
+    }
+    var x = new Array(n);
+    for (i = n - 1; i >= 0; i--) {
+      var s = A[i][n]; for (j = i + 1; j < n; j++) s -= A[i][j] * x[j];
+      x[i] = s / A[i][i];
+    }
+    return x;
+  }
+
+  /* Polynomial least-squares fit of the given degree. x is centered/scaled first
+   * for numerical stability (time in seconds otherwise blows up the powers). */
+  function polyFit(xs, ys, degree) {
+    var X = [], Y = [], i;
+    for (i = 0; i < xs.length; i++) { if (isFinite(xs[i]) && isFinite(ys[i])) { X.push(xs[i]); Y.push(ys[i]); } }
+    var n = X.length; degree = Math.max(1, Math.min(6, degree | 0));
+    if (n < degree + 1) return null;
+    var mean = 0; for (i = 0; i < n; i++) mean += X[i]; mean /= n;
+    var span = X[n - 1] - X[0]; var scale = Math.abs(span) > 1e-9 ? span / 2 : 1;
+    var S = new Array(2 * degree + 1); for (i = 0; i <= 2 * degree; i++) S[i] = 0;
+    var b = new Array(degree + 1); for (i = 0; i <= degree; i++) b[i] = 0;
+    for (i = 0; i < n; i++) {
+      var z = (X[i] - mean) / scale, p = 1;
+      for (var k = 0; k <= 2 * degree; k++) { S[k] += p; p *= z; }
+      p = 1; for (k = 0; k <= degree; k++) { b[k] += p * Y[i]; p *= z; }
+    }
+    var M = []; for (i = 0; i <= degree; i++) { M[i] = []; for (var j2 = 0; j2 <= degree; j2++) M[i][j2] = S[i + j2]; }
+    var coeffs = gaussSolve(M, b); if (!coeffs) return null;
+    var fit = { type: 'poly', coeffs: coeffs, mean: mean, scale: scale, degree: degree };
+    var meanY = 0; for (i = 0; i < n; i++) meanY += Y[i]; meanY /= n;
+    var ssr = 0, sst = 0; for (i = 0; i < n; i++) { var e = Y[i] - polyEval(fit, X[i]); ssr += e * e; sst += (Y[i] - meanY) * (Y[i] - meanY); }
+    fit.r2 = sst > 0 ? 1 - ssr / sst : 1;
+    return fit;
+  }
+  function polyEval(fit, x) {
+    var z = (x - fit.mean) / fit.scale, y = 0, p = 1;
+    for (var k = 0; k < fit.coeffs.length; k++) { y += fit.coeffs[k] * p; p *= z; }
+    return y;
+  }
+
+  /* Logarithmic fit y = a + b·ln(t − t0), where t0 shifts the domain positive. */
+  function logFit(xs, ys) {
+    var X = [], Y = [], i, xmin = Infinity;
+    for (i = 0; i < xs.length; i++) { if (isFinite(xs[i]) && isFinite(ys[i])) { X.push(xs[i]); Y.push(ys[i]); if (xs[i] < xmin) xmin = xs[i]; } }
+    if (X.length < 2) return null;
+    var shift = xmin - 1;   // ensures t - shift >= 1 > 0
+    var lx = X.map(function (x) { return Math.log(x - shift); });
+    var reg = linearRegression(lx, Y); if (!reg) return null;
+    return { type: 'log', a: reg.intercept, b: reg.slope, shift: shift, r2: reg.r2 };
+  }
+  function logEval(fit, x) { var d = x - fit.shift; return d > 0 ? fit.a + fit.b * Math.log(d) : NaN; }
+
+  /* Rich per-series features over a slice (used by the Features & Settling tool).
+   * settleBand: settling time = first time after which |y - yEnd| stays <= band.
+   * threshold : first crossing time of that level (null if never). */
+  function featureStats(xs, ys, opts) {
+    opts = opts || {};
+    var st = seriesStats(xs, ys);
+    if (!st) return null;
+    var n = xs.length;
+    var startY = NaN, endY = NaN, i;
+    for (i = 0; i < n; i++) { if (!isNaN(ys[i])) { startY = ys[i]; break; } }
+    for (i = n - 1; i >= 0; i--) { if (!isNaN(ys[i])) { endY = ys[i]; break; } }
+    // max |rate| via local slope between neighbours
+    var maxRate = 0, maxRateX = NaN;
+    for (i = 0; i < n - 1; i++) {
+      var dx = xs[i + 1] - xs[i]; if (!(dx > 0)) continue;
+      var dy = ys[i + 1] - ys[i]; if (isNaN(dy)) continue;
+      var rate = dy / dx;
+      if (Math.abs(rate) > Math.abs(maxRate)) { maxRate = rate; maxRateX = (xs[i] + xs[i + 1]) / 2; }
+    }
+    // settling time: last index where |y-endY| > band, then the next sample time
+    var settleX = null;
+    if (opts.settleBand != null && opts.settleBand >= 0 && !isNaN(endY)) {
+      var lastOut = -1;
+      for (i = 0; i < n; i++) { if (!isNaN(ys[i]) && Math.abs(ys[i] - endY) > opts.settleBand) lastOut = i; }
+      settleX = lastOut < 0 ? (isNaN(xs[0]) ? null : xs[0]) : (lastOut + 1 < n ? xs[lastOut + 1] : null);
+      if (settleX != null && xs.length) settleX = settleX - xs[0];   // relative to slice start
+    }
+    var thrX = null;
+    if (opts.threshold != null && isFinite(opts.threshold)) {
+      var cr = thresholdCrossings(xs, ys, opts.threshold);
+      if (cr.length) thrX = cr[0].x;
+    }
+    return {
+      min: st.min, max: st.max, mean: st.mean, range: st.max - st.min,
+      argMinX: st.argMinX, argMaxX: st.argMaxX,
+      start: startY, end: endY, net: endY - startY,
+      timeToPeak: isNaN(st.argMaxX) || !xs.length ? NaN : st.argMaxX - xs[0],
+      maxRate: maxRate, maxRateX: maxRateX,
+      settleX: settleX, thresholdX: thrX, count: st.count,
+    };
+  }
+
   TS.Analysis = {
     aggregateSeries: aggregateSeries,
     floorIndex: floorIndex,
@@ -333,5 +512,12 @@
     seriesStats: seriesStats,
     thresholdCrossings: thresholdCrossings,
     averageSeries: averageSeries,
+    expFit: expFit,
+    expEval: expEval,
+    polyFit: polyFit,
+    polyEval: polyEval,
+    logFit: logFit,
+    logEval: logEval,
+    featureStats: featureStats,
   };
 })(window.TS = window.TS || {});

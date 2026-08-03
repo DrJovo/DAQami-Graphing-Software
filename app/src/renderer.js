@@ -60,7 +60,7 @@
       c.arcTo(x, y, x + w, y, r);
       c.closePath();
       if (s.fill) { c.globalAlpha = s.fillAlpha == null ? 1 : s.fillAlpha; c.fillStyle = s.fill; c.fill(); c.globalAlpha = 1; }
-      if (s.stroke) { c.globalAlpha = 1; c.strokeStyle = s.stroke; c.lineWidth = s.width || 1; c.stroke(); }
+      if (s.stroke) { c.globalAlpha = s.strokeAlpha == null ? 1 : s.strokeAlpha; c.strokeStyle = s.stroke; c.lineWidth = s.width || 1; if (s.dash) c.setLineDash(s.dash); c.stroke(); c.setLineDash([]); c.globalAlpha = 1; }
     },
     text: function (str, x, y, s) {
       var c = this.ctx;
@@ -285,6 +285,8 @@
     var sy = makeScale(v.yMin, v.yMax, plot.y + plot.h, plot.y);
     var xt = niceTicks(v.xMin, v.xMax, Math.max(3, Math.round(plot.w / 90)));
 
+    var annotationBoxes = [];   // pixel rects of annotation labels, for hit-testing
+
     // ---- grid + data (clipped) ----
     rd.save();
     rd.clipRect(plot.x, plot.y, plot.w, plot.h);
@@ -339,20 +341,31 @@
     (ov.averageLines || []).forEach(function (a) {
       drawPolyline(rd, a.xs, a.ys, sx, sy, v, { color: a.color, width: a.width || 2.4, dash: a.dash || [], alpha: a.alpha });
     });
-    // best-fit lines: solid within the fitted range, dotted where extrapolated
-    (ov.bestFit || []).forEach(function (b) {
-      function yAt(x) { return sy.toPixel(b.slope * x + b.intercept); }
-      var fmin = b.fitMin == null ? b.drawMin : b.fitMin, fmax = b.fitMax == null ? b.drawMax : b.fitMax;
-      if (b.drawMin < fmin) {
-        rd.beginPath(); rd.moveTo(sx.toPixel(b.drawMin), yAt(b.drawMin)); rd.lineTo(sx.toPixel(fmin), yAt(fmin));
-        rd.strokePath({ color: b.color, width: 2, dash: [2, 4] });
+    // curve fits (linear / poly / log / exp): sampled from the model's eval(x).
+    // In-range styled per the toggle (dotted by default); outside range always
+    // dotted; optionally extended across the whole visible range.
+    (ov.curveFit || []).forEach(function (c) {
+      var fmn = c.fitMin, fmx = c.fitMax;
+      var start = c.extend ? Math.min(v.xMin, c.drawMin) : c.drawMin;
+      var end = c.extend ? Math.max(v.xMax, c.drawMax) : c.drawMax;
+      function seg(x0, x1, dash, w) {
+        if (!(x1 > x0)) return;
+        var N = 96, pen = false, drawn = 0; rd.beginPath();
+        for (var i = 0; i <= N; i++) {
+          var x = x0 + (x1 - x0) * (i / N), y = c.eval(x);
+          if (!isFinite(y)) { pen = false; continue; }
+          var px = sx.toPixel(x), py = sy.toPixel(y);
+          // stop runaway growth (exp extrapolation) from producing huge coordinates
+          if (py < -8000 || py > 8000) { pen = false; continue; }
+          if (!pen) { rd.moveTo(px, py); pen = true; } else rd.lineTo(px, py);
+          drawn++;
+        }
+        if (drawn) rd.strokePath({ color: c.color, width: w, dash: dash || [] });
       }
-      if (b.drawMax > fmax) {
-        rd.beginPath(); rd.moveTo(sx.toPixel(fmax), yAt(fmax)); rd.lineTo(sx.toPixel(b.drawMax), yAt(b.drawMax));
-        rd.strokePath({ color: b.color, width: 2, dash: [2, 4] });
-      }
-      rd.beginPath(); rd.moveTo(sx.toPixel(fmin), yAt(fmin)); rd.lineTo(sx.toPixel(fmax), yAt(fmax));
-      rd.strokePath({ color: b.color, width: 2.2 });
+      var inDash = c.style === 'solid' ? null : [2, 4];
+      if (start < fmn) seg(start, fmn, [2, 4], 2);
+      if (end > fmx) seg(fmx, end, [2, 4], 2);
+      seg(fmn, fmx, inDash, c.style === 'solid' ? 2.4 : 2);
     });
     // threshold lines
     (ov.thresholds || []).forEach(function (th) {
@@ -403,6 +416,26 @@
       rd.beginPath(); approxCircle(rd, px, py, 4.5); rd.strokePath({ color: T.surface, width: 1.4 });
       if (p.label) labelChip(rd, p.label, px + 10 + rd.measureText(p.label, 11) / 2, py - 12, { color: p.color, bg: T.labelBg, border: T.gridMajor, align: 'center' });
     });
+    // anchored annotations: leader line + draggable multi-line label box (auto-wrapped
+    // near the graph edge; boxes + anchors returned for hit-testing / dragging)
+    (ov.annotations || []).forEach(function (a) {
+      var ax = sx.toPixel(a.x), ay = sy.toPixel(a.y);
+      var size = 11, lineH = 15, padX = 8, padY = 5;
+      var maxTextW = Math.max(40, plot.w - 40);   // wrap only when it would reach the graph edge
+      var lines = wrapText(rd, a.text || '', maxTextW, size, UI_FONT);
+      var tw = 0; lines.forEach(function (L) { tw = Math.max(tw, rd.measureText(L || ' ', size, UI_FONT)); });
+      var bw = Math.max(20, tw) + padX * 2, bh = lines.length * lineH + padY * 2;
+      var lx = ax + a.dx, ly = ay + a.dy, bx = lx - bw / 2, by = ly - bh / 2;
+      bx = Math.max(plot.x + 2, Math.min(plot.x + plot.w - bw - 2, bx));   // keep on-plot
+      by = Math.max(plot.y + 2, Math.min(plot.y + plot.h - bh - 2, by));
+      var bcx = bx + bw / 2, bcy = by + bh / 2;
+      rd.beginPath(); rd.moveTo(ax, ay); rd.lineTo(bcx, bcy); rd.strokePath({ color: T.mutedText, width: 1, dash: [3, 3] });
+      drawMarker(rd, 'circle', ax, ay, 3, { color: T.crosshair, alpha: 1 });
+      rd.beginPath(); approxCircle(rd, ax, ay, 3); rd.strokePath({ color: T.surface, width: 1 });
+      rd.roundRect(bx, by, bw, bh, 5, { fill: T.labelBg, fillAlpha: 0.97, stroke: T.gridMajor, width: 1 });
+      lines.forEach(function (L, i) { rd.text(L, bcx, by + padY + i * lineH + lineH / 2, { color: T.text, size: size, align: 'center', baseline: 'middle' }); });
+      annotationBoxes.push({ id: a.id, x: bx, y: by, w: bw, h: bh, ax: ax, ay: ay });
+    });
 
     rd.restore(); // end clip
 
@@ -447,10 +480,11 @@
       titleBox = { x: cx - tw / 2 - 8, y: 6, w: tw + 16 + 18, h: 26 };  // clickable rename region (CSS px)
     }
 
-    // ---- legend (inside top-right) ----
-    if (scene.legend !== false) drawLegend(rd, series, ov, plot, T);
+    // ---- legend (draggable, snaps to a corner) ----
+    var legendBox = null;
+    if (scene.legend !== false) legendBox = drawLegend(rd, series, ov, plot, T, scene.legendCorner || 'tr', scene._legendDrag);
 
-    return { plot: plot, sx: sx, sy: sy, xTicks: xt, yTicks: yt, titleBox: titleBox };
+    return { plot: plot, sx: sx, sy: sy, xTicks: xt, yTicks: yt, titleBox: titleBox, legendBox: legendBox, annotationBoxes: annotationBoxes };
   }
 
   function drawMinor(rd, tk, axis, sx, sy, plot, T) {
@@ -527,18 +561,47 @@
     rd.strokePath(style);
   }
 
-  function drawLegend(rd, series, ov, plot, T) {
+  /* Word-wrap text to a max pixel width, honoring explicit newlines. */
+  function wrapText(rd, text, maxW, size, font) {
+    var lines = [];
+    String(text).split('\n').forEach(function (para) {
+      if (para === '') { lines.push(''); return; }
+      var words = para.split(/\s+/), cur = '';
+      for (var i = 0; i < words.length; i++) {
+        var test = cur ? cur + ' ' + words[i] : words[i];
+        if (cur && rd.measureText(test, size, font) > maxW) { lines.push(cur); cur = words[i]; }
+        else cur = test;
+      }
+      if (cur) lines.push(cur);
+    });
+    return lines.length ? lines : [''];
+  }
+
+  function drawLegend(rd, series, ov, plot, T, corner, dragPos) {
     var items = [];
     series.forEach(function (s) { if (s.visibility !== 'off') items.push({ label: s.label, color: s.color, shape: s.plotType === 'scatter' ? s.shape : 'line' }); });
     (ov.averageLines || []).forEach(function (a) { if (a.label) items.push({ label: a.label, color: a.color, shape: 'line' }); });
-    if (items.length === 0) return;
+    if (items.length === 0) return null;
     var size = 11, rowH = 17, padX = 10, padY = 8, swatch = 14;
     var maxLabel = 0;
     items.forEach(function (it) { maxLabel = Math.max(maxLabel, rd.measureText(it.label, size, UI_FONT)); });
     var boxW = swatch + 7 + maxLabel + padX * 2;
     var boxH = items.length * rowH + padY * 2;
-    var bx = plot.x + plot.w - boxW - 10, by = plot.y + 10;
-    rd.roundRect(bx, by, boxW, boxH, 6, { fill: T.surface, fillAlpha: 0.92, stroke: T.gridMajor, width: 1 });
+    function cornerXY(cn) {
+      var right = (cn || 'tr').indexOf('r') >= 0, bottom = (cn || 'tr').indexOf('b') >= 0;
+      return { x: right ? plot.x + plot.w - boxW - 10 : plot.x + 10, y: bottom ? plot.y + plot.h - boxH - 10 : plot.y + 10 };
+    }
+    var bx, by, boxAlpha = 0.92;
+    if (dragPos) {   // following the cursor mid-drag
+      bx = Math.max(plot.x + 2, Math.min(plot.x + plot.w - boxW - 2, dragPos.x));
+      by = Math.max(plot.y + 2, Math.min(plot.y + plot.h - boxH - 2, dragPos.y));
+      boxAlpha = 0.55;   // slightly transparent while held
+      var gp = cornerXY(dragPos.snapCorner);   // dotted outline showing where it will snap
+      rd.roundRect(gp.x, gp.y, boxW, boxH, 6, { stroke: T.crosshair, width: 1.5, dash: [5, 4], strokeAlpha: 0.9 });
+    } else {
+      var xy = cornerXY(corner); bx = xy.x; by = xy.y;
+    }
+    rd.roundRect(bx, by, boxW, boxH, 6, { fill: T.surface, fillAlpha: boxAlpha, stroke: T.gridMajor, width: 1 });
     items.forEach(function (it, i) {
       var cy = by + padY + i * rowH + rowH / 2;
       var swx = bx + padX;
@@ -550,6 +613,7 @@
       }
       rd.text(it.label, swx + swatch + 7, cy, { color: T.text, size: size, align: 'left', baseline: 'middle' });
     });
+    return { x: bx, y: by, w: boxW, h: boxH };
   }
 
   TS.Renderer = {

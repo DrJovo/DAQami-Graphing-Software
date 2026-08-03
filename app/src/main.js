@@ -210,12 +210,19 @@
   function clearNode(n) { while (n.firstChild) n.removeChild(n.firstChild); }
 
   var toastTimer;
-  function toast(msg) {
+  function toast(msg, action) {
     var host = els.toastHost; clearNode(host);
-    var t = el('div', { class: 'toast', text: msg }); host.appendChild(t);
+    var t = el('div', { class: 'toast' }, [el('span', { text: msg })]);
+    var dur = 2600;
+    if (action) {
+      var b = el('button', { class: 'toast-action', text: action.label });
+      b.addEventListener('click', function () { action.onClick(); t.classList.remove('show'); setTimeout(function () { clearNode(host); }, 250); });
+      t.appendChild(b); dur = 9000;   // give time to act
+    }
+    host.appendChild(t);
     requestAnimationFrame(function () { t.classList.add('show'); });
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.classList.remove('show'); setTimeout(function () { clearNode(host); }, 250); }, 2600);
+    toastTimer = setTimeout(function () { t.classList.remove('show'); setTimeout(function () { clearNode(host); }, 250); }, dur);
   }
 
   /* ------------------------------- modal --------------------------------- */
@@ -487,8 +494,9 @@
         { label: 'Open Data Folder…', key: 'Ctrl+O', action: openFolder },
         { label: 'Organize & Export CSV…', action: organizeDialog, disabled: noData },
         { sep: 1 },
-        { label: 'Save Session…', action: saveSessionDialog, disabled: noData },
-        { label: 'Load Session…', action: loadSession },
+        { label: 'Save Session', key: 'Ctrl+S', action: quickSave, disabled: noData },
+        { label: 'Save Session As…', action: saveSessionDialog, disabled: noData },
+        { label: 'Open Session…', action: loadSession },
         { sep: 1 },
         { label: 'Export Graph as PNG…', action: exportPngDialog, disabled: noData },
         { label: 'Export Graph as SVG', action: exportSvg, disabled: noData },
@@ -855,9 +863,30 @@
       : dom.kind === 'manual' ? 'manual range' : 'full range';
   }
 
+  /* Fit a model to a series over range r, returning an eval(x) function and the
+   * model parameters for the readout. Shared by the chart overlay and the tool. */
+  var CURVE_MODELS = { linear: 'Linear', poly: 'Polynomial', log: 'Logarithmic', exp: 'Exponential' };
+  function computeCurveFit(m, r, cf) {
+    var sl = Analysis.sliceXY(m.xs, m.rawYs, r[0], r[1]);
+    if (cf.model === 'linear') {
+      var reg = Analysis.linearRegression(sl.xs, sl.ys); if (!reg) return null;
+      return { eval: function (x) { return reg.slope * x + reg.intercept; }, params: reg, r2: reg.r2 };
+    }
+    if (cf.model === 'poly') {
+      var pf = Analysis.polyFit(sl.xs, sl.ys, cf.polyDegree || 3); if (!pf) return null;
+      return { eval: function (x) { return Analysis.polyEval(pf, x); }, params: pf, r2: pf.r2 };
+    }
+    if (cf.model === 'log') {
+      var lf = Analysis.logFit(sl.xs, sl.ys); if (!lf) return null;
+      return { eval: function (x) { return Analysis.logEval(lf, x); }, params: lf, r2: lf.r2 };
+    }
+    var ef = Analysis.expFit(sl.xs, sl.ys, { direction: cf.direction, baseline: cf.baseline }); if (!ef) return null;
+    return { eval: function (x) { return Analysis.expEval(ef, x); }, params: ef, r2: ef.r2 };
+  }
+
   function computeOverlays(series, g) {
     var T = chartColors();
-    var ov = { averageLines: [], bestFit: [], minmax: [], areas: [], manualPoints: [], manualLines: [], cursors: [], thresholds: [] };
+    var ov = { averageLines: [], curveFit: [], minmax: [], areas: [], manualPoints: [], manualLines: [], annotations: [], cursors: [], thresholds: [] };
     var visible = series.filter(function (s) { return s.visibility !== 'off' && s.xs && s.xs.length; });
 
     (g.stats || []).forEach(function (stat) {
@@ -883,18 +912,20 @@
       }
     });
     var meta = graphMetaMap();
-    g.bestFit.forEach(function (id) {
+    var cf = g.curveFit;
+    if (cf && cf.ids) cf.ids.forEach(function (id) {
       var m = meta[id]; if (!m) return;
-      var r = resolveDomain(m, g.bestFitDomain);
-      var sl = Analysis.sliceXY(m.xs, m.rawYs, r[0], r[1]);
-      var reg = Analysis.linearRegression(sl.xs, sl.ys); if (!reg) return;
+      var r = resolveDomain(m, cf.domain);
+      var res = computeCurveFit(m, r, cf); if (!res) return;
       var ext = fullExtent(m);
-      ov.bestFit.push({ slope: reg.slope, intercept: reg.intercept, r2: reg.r2,
+      ov.curveFit.push({ eval: res.eval, style: cf.style, extend: !!cf.extend,
         fitMin: r[0], fitMax: r[1], drawMin: ext[0], drawMax: ext[1], color: m.color, id: id });
     });
-    g.minmax.forEach(function (id) {
+    var featIds = g.features || g.minmax || [];
+    var featDom = g.featureDomain || g.minmaxDomain;
+    featIds.forEach(function (id) {
       var m = meta[id]; if (!m) return;
-      var r = resolveDomain(m, g.minmaxDomain);
+      var r = resolveDomain(m, featDom);
       var sl = Analysis.sliceXY(m.xs, m.rawYs, r[0], r[1]);
       var st = Analysis.seriesStats(sl.xs, sl.ys); if (!st) return;
       ov.minmax.push({ x: st.argMinX, y: st.min, kind: 'min', color: m.color });
@@ -912,6 +943,9 @@
     ov.manualLines = g.manualLines.map(function (l) {
       return { id: l.id, axis: l.axis, value: l.value, color: l.color, style: l.style,
         label: l.showLabel === false ? null : (l.label || (l.axis + ' = ' + fmt(l.value, 3))) };
+    });
+    ov.annotations = (g.annotations || []).map(function (a) {
+      return { id: a.id, x: a.x, y: a.y, dx: a.dx || 0, dy: a.dy || -34, text: a.text || '' };
     });
     ov.cursors = g.cursors.map(function (x) { return { x: x, color: accentHex() }; });
     if (g.threshold) {
@@ -985,7 +1019,7 @@
     return {
       theme: chartColors(), series: series, overlays: computeOverlays(series, g),
       boundaries: computeBoundaries(), trialWindow: trialWindow(),
-      grid: store.state.showGrid, legend: store.state.legend,
+      grid: store.state.showGrid, legend: store.state.legend, legendCorner: store.state.legendCorner || 'tr',
       selection: selection, hasSelection: hasSelection(),
       title: chartTitle(), xLabel: 'Time (s)', yLabel: yAxisLabel(),
     };
@@ -1231,17 +1265,17 @@
       body.appendChild(statisticsEditor(g));
     }, 'Plot the mean, median, mode, std-dev, or a Mean ± SD band across chosen datasets. Each line is frozen when added.');
 
-    tool(host, 'stats', Icons.minmax, 'Min / Max / Mean', g.minmax.length > 0, function (body) {
-      body.appendChild(statsEditor(g));
-    }, 'Mark the minimum and maximum, and read min / max / mean over any x-range.');
+    tool(host, 'features', Icons.minmax, 'Features & Settling', (g.features || g.minmax || []).length > 0, function (body) {
+      body.appendChild(featureEditor(g));
+    }, 'Peaks, range, rates, time-to-threshold and settling time over a range — with a table you can export to CSV.');
 
     tool(host, 'area', Icons.area, 'Area Under Curve', g.areas.length > 0, function (body) {
       body.appendChild(areaEditor(g));
     }, 'Shade and integrate the area under a series over a chosen range.');
 
-    tool(host, 'fit', Icons.line, 'Line of Best Fit', g.bestFit.length > 0, function (body) {
-      body.appendChild(fitEditor(g));
-    }, 'Fit a straight line (solid in range, dotted where extrapolated) and read slope, intercept, and R².');
+    tool(host, 'curvefit', Icons.line, 'Curve Fit', (g.curveFit && g.curveFit.ids.length) > 0, function (body) {
+      body.appendChild(curveFitEditor(g));
+    }, 'Fit a line or curve — linear, polynomial, logarithmic, or exponential (with τ and asymptote) — over a chosen range.');
 
     tool(host, 'smooth', Icons.smooth, 'Smoothing', anySmooth(g), function (body) {
       body.appendChild(smoothEditor(g));
@@ -1250,6 +1284,10 @@
     tool(host, 'manual', Icons.dots, 'Manual Plotting', (g.manualPoints.length + g.manualLines.length) > 0, function (body) {
       body.appendChild(manualEditor(g));
     }, 'Add your own annotation points and reference lines (or double-click the chart to drop a point).');
+
+    tool(host, 'annotate', Icons.note, 'Annotations', (g.annotations || []).length > 0, function (body) {
+      body.appendChild(annotationEditor(g));
+    }, 'Pin a text note to a point on the chart with a leader line; drag the note to place it.');
 
     tool(host, 'cursor', Icons.cursor, 'Dual-Cursor Measure', g.cursors.length > 0, function (body) {
       body.appendChild(cursorEditor(g));
@@ -1417,58 +1455,134 @@
     return wrap;
   }
 
-  function statsEditor(g) {
+  // Number field whose value may be blank (= null): used for optional thresholds.
+  function numFieldOpt(label, value, onset, oncommit) {
+    var input = el('input', { class: 'input mono', type: 'number', step: 'any', value: value == null ? '' : value, placeholder: '—' });
+    input.addEventListener('change', function () { var v = parseFloat(input.value); onset((input.value === '' || isNaN(v)) ? null : v); if (oncommit) oncommit(); });
+    return el('div', { class: 'field', style: 'margin:0' }, [el('label', { text: label }), input]);
+  }
+  function csvCell(s) { s = '' + s; return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; }
+
+  /* ---- Features & Settling: rich per-dataset metrics over a range, exportable. ---- */
+  function featureEditor(g) {
+    if (!g.features) g.features = (g.minmax || []).slice();
+    if (!g.featureDomain) g.featureDomain = g.minmaxDomain || TS.freshDomain();
+    if (!g.featureOpts) g.featureOpts = { threshold: null, settleBand: 1 };
+    var opts = g.featureOpts;
     var wrap = el('div', {});
-    wrap.appendChild(datasetPicker('Mark min & max for', g.minmax, function (ids) { g.minmax = ids; store.commit('minmax'); }));
+    wrap.appendChild(el('p', { class: 'hint', text: 'Peaks, range, rates, time-to-threshold and settling time for each chosen dataset over a range. Min & max are marked on the chart; export the full table as CSV.' }));
+    wrap.appendChild(datasetPicker('Measure', g.features, function (ids) { g.features = ids; store.commit('features'); }));
     var out = el('div', { class: 'readout', style: 'margin-top:10px' });
-    function refresh() { renderStatsReadout(out, g); }
-    wrap.appendChild(domainField(g.minmaxDomain, function () { view.render(); refresh(); }, function () { store.commit('minmax-domain'); }));
+    function refresh() { renderFeatureReadout(out, g); }
+    wrap.appendChild(domainField(g.featureDomain, function () { view.render(); refresh(); }, function () { store.commit('feature-domain'); }));
+    var optRow = el('div', { class: 'split', style: 'margin-top:8px' });
+    optRow.appendChild(numFieldOpt('Threshold', opts.threshold, function (v) { opts.threshold = v; }, function () { store.commit('feature-opt'); refresh(); }));
+    optRow.appendChild(numField('Settle ± band', opts.settleBand, function (v) { opts.settleBand = v; }, function () { store.commit('feature-opt'); refresh(); }));
+    wrap.appendChild(optRow);
+    wrap.appendChild(el('p', { class: 'hint', style: 'margin-top:6px', text: 'Threshold = first crossing time. Settling = time until the trace stays within ± the band of its final value.' }));
+    var exp = el('button', { class: 'btn sm', style: 'margin-top:10px', html: Icons.download + ' Export table (CSV)', title: 'Save the measured features for the selected datasets', onclick: function () { exportFeatureCSV(g); } });
+    wrap.appendChild(exp);
     wrap.appendChild(out); refresh();
     return wrap;
   }
-  function renderStatsReadout(out, g) {
+  function renderFeatureReadout(out, g) {
     clearNode(out);
-    if (!g.minmax.length) { out.appendChild(el('div', { class: 'hint', text: 'Select a series above.' })); return; }
-    out.appendChild(el('div', { class: 'hint', style: 'margin-bottom:4px', text: 'over ' + domainLabel(g.minmaxDomain) }));
-    var meta = graphMetaMap();
-    g.minmax.forEach(function (id) {
+    var ids = g.features || [];
+    if (!ids.length) { out.appendChild(el('div', { class: 'hint', text: 'Select a series above.' })); return; }
+    out.appendChild(el('div', { class: 'hint', style: 'margin-bottom:4px', text: 'over ' + domainLabel(g.featureDomain) }));
+    var meta = graphMetaMap(), u = currentUnit(), us = u ? (' ' + u) : '', rateU = u ? (' ' + u + '/s') : ' /s', o = g.featureOpts || {};
+    ids.forEach(function (id) {
       var m = meta[id]; if (!m) return;
-      var r = resolveDomain(m, g.minmaxDomain);
+      var r = resolveDomain(m, g.featureDomain);
       var sl = Analysis.sliceXY(m.xs, m.rawYs, r[0], r[1]);
-      var st = Analysis.seriesStats(sl.xs, sl.ys);
+      var f = Analysis.featureStats(sl.xs, sl.ys, o);
       out.appendChild(el('div', { html: '<b>' + m.label + '</b>' }));
-      if (!st) { out.appendChild(el('div', { html: '<span class="rk">no points in range</span>' })); return; }
-      out.appendChild(el('div', { html: '<span class="rk">min</span><span class="rv">' + fmt(st.min, 3) + ' @ ' + fmt(st.argMinX, 2) + 's</span>' }));
-      out.appendChild(el('div', { html: '<span class="rk">max</span><span class="rv">' + fmt(st.max, 3) + ' @ ' + fmt(st.argMaxX, 2) + 's</span>' }));
-      out.appendChild(el('div', { html: '<span class="rk">mean</span><span class="rv">' + fmt(st.mean, 3) + '</span>' }));
+      if (!f) { out.appendChild(el('div', { html: '<span class="rk">no points in range</span>' })); return; }
+      function row(k, v) { out.appendChild(el('div', { html: '<span class="rk">' + k + '</span><span class="rv">' + v + '</span>' })); }
+      row('max', fmt(f.max, 3) + us + ' @ ' + fmt(f.argMaxX, 2) + 's');
+      row('min', fmt(f.min, 3) + us + ' @ ' + fmt(f.argMinX, 2) + 's');
+      row('mean', fmt(f.mean, 3) + us);
+      row('range', fmt(f.range, 3) + us);
+      row('net Δ', fmt(f.net, 3) + us);
+      row('time to peak', isNaN(f.timeToPeak) ? '—' : fmt(f.timeToPeak, 2) + ' s');
+      row('max rate', fmt(f.maxRate, 3) + rateU + ' @ ' + fmt(f.maxRateX, 2) + 's');
+      if (o.threshold != null) row('time to ' + fmt(o.threshold, 1) + us, f.thresholdX == null ? 'never' : fmt(f.thresholdX, 2) + ' s');
+      if (o.settleBand != null) row('settling (±' + fmt(o.settleBand, 2) + ')', f.settleX == null ? '—' : fmt(f.settleX, 2) + ' s');
     });
   }
+  function exportFeatureCSV(g) {
+    var ids = g.features || [];
+    if (!ids.length) { toast('Select datasets first'); return; }
+    var meta = graphMetaMap(), u = currentUnit() || '';
+    var head = ['Dataset', 'Min(' + u + ')', 'MinTime(s)', 'Max(' + u + ')', 'MaxTime(s)', 'Mean(' + u + ')', 'Range(' + u + ')',
+      'Start(' + u + ')', 'End(' + u + ')', 'Net(' + u + ')', 'TimeToPeak(s)', 'MaxRate(' + u + '/s)', 'MaxRateTime(s)', 'TimeToThreshold(s)', 'SettlingTime(s)'];
+    var rows = [head.map(csvCell).join(',')];
+    function n(v) { return (v == null || isNaN(v)) ? '' : ('' + (+v.toFixed(4))); }
+    ids.forEach(function (id) {
+      var m = meta[id]; if (!m) return;
+      var r = resolveDomain(m, g.featureDomain);
+      var sl = Analysis.sliceXY(m.xs, m.rawYs, r[0], r[1]);
+      var f = Analysis.featureStats(sl.xs, sl.ys, g.featureOpts); if (!f) return;
+      rows.push([csvCell(m.label), n(f.min), n(f.argMinX), n(f.max), n(f.argMaxX), n(f.mean), n(f.range),
+        n(f.start), n(f.end), n(f.net), n(f.timeToPeak), n(f.maxRate), n(f.maxRateX), n(f.thresholdX), n(f.settleX)].join(','));
+    });
+    saveWithPicker('features.csv', fsTypes('text/csv', ['.csv']), function (cb) { cb(textBlob('﻿' + rows.join('\r\n'), 'text/csv')); });
+  }
 
-  function fitEditor(g) {
+  /* ---- Curve Fit: linear / polynomial / logarithmic / exponential. ---- */
+  function curveFitEditor(g) {
+    if (!g.curveFit) g.curveFit = { ids: [], domain: TS.freshDomain(), model: 'exp', polyDegree: 3, direction: 'auto', baseline: null, style: 'dotted', extend: true };
+    var cf = g.curveFit;
+    if (!cf.ids.length && g.bestFit && g.bestFit.length) { cf.ids = g.bestFit.slice(); cf.model = 'linear'; if (g.bestFitDomain) cf.domain = g.bestFitDomain; }  // migrate legacy
     var wrap = el('div', {});
-    wrap.appendChild(datasetPicker('Fit a line to', g.bestFit, function (ids) { g.bestFit = ids; store.commit('bestfit'); }));
+    wrap.appendChild(el('p', { class: 'hint', text: 'Fit a model to the selected data over a range. Polynomial captures a spike-and-settle shape; Exponential reads the thermal time constant τ and asymptote.' }));
+    wrap.appendChild(datasetPicker('Fit', cf.ids, function (ids) { cf.ids = ids; store.commit('curvefit'); }));
     var out = el('div', { class: 'readout', style: 'margin-top:10px' });
-    function refresh() { renderFitReadout(out, g); }
-    wrap.appendChild(domainField(g.bestFitDomain, function () { view.render(); refresh(); }, function () { store.commit('bestfit-domain'); }));
-    wrap.appendChild(el('p', { class: 'hint', style: 'margin-top:8px', text: 'The fit is solid over its range and dotted where extrapolated.' }));
+    function refresh() { renderCurveFitReadout(out, g); }
+    wrap.appendChild(domainField(cf.domain, function () { view.render(); refresh(); }, function () { store.commit('curvefit-domain'); }));
+
+    wrap.appendChild(capLabel('Model', 10));
+    wrap.appendChild(segmented([{ value: 'linear', label: 'Linear' }, { value: 'poly', label: 'Poly' }, { value: 'log', label: 'Log' }, { value: 'exp', label: 'Exp' }], cf.model, function (v) { cf.model = v; store.commit('curvefit-model'); }));
+
+    if (cf.model === 'poly') {
+      wrap.appendChild(el('div', { style: 'margin-top:8px' }, [field('Degree', segmented([{ value: 2, label: '2' }, { value: 3, label: '3' }, { value: 4, label: '4' }], cf.polyDegree, function (v) { cf.polyDegree = +v; store.commit('curvefit-deg'); }))]));
+    } else if (cf.model === 'exp') {
+      wrap.appendChild(capLabel('Direction', 8));
+      wrap.appendChild(segmented([{ value: 'auto', label: 'Auto' }, { value: 'heating', label: 'Heating' }, { value: 'cooling', label: 'Cooling' }], cf.direction, function (v) { cf.direction = v; store.commit('curvefit-dir'); }));
+      wrap.appendChild(el('div', { style: 'margin-top:8px' }, [numFieldOpt('Fixed asymptote T∞ (blank = auto)', cf.baseline, function (v) { cf.baseline = v; }, function () { store.commit('curvefit-base'); refresh(); })]));
+    }
+
+    wrap.appendChild(capLabel('Line', 10));
+    var lineRow = el('div', { class: 'row wrap', style: 'gap:10px' });
+    lineRow.appendChild(segmented([{ value: 'dotted', label: 'Dotted' }, { value: 'solid', label: 'Solid in range' }], cf.style, function (v) { cf.style = v; store.commit('curvefit-style'); }));
+    var extCb = el('input', { type: 'checkbox' }); extCb.checked = cf.extend !== false;
+    extCb.addEventListener('change', function () { cf.extend = extCb.checked; store.commit('curvefit-extend'); });
+    lineRow.appendChild(el('label', { class: 'chk' }, [extCb, el('span', { class: 'box', html: Icons.check }), el('span', { text: 'Extend across view' })]));
+    wrap.appendChild(lineRow);
+    wrap.appendChild(el('p', { class: 'hint', style: 'margin-top:6px', text: 'Outside the fitted range the curve is always dotted.' }));
+
     wrap.appendChild(out); refresh();
     return wrap;
   }
-  function renderFitReadout(out, g) {
+  function renderCurveFitReadout(out, g) {
     clearNode(out);
-    if (!g.bestFit.length) { out.appendChild(el('div', { class: 'hint', text: 'Select a series above.' })); return; }
-    out.appendChild(el('div', { class: 'hint', style: 'margin-bottom:4px', text: 'fitted over ' + domainLabel(g.bestFitDomain) }));
-    var meta = graphMetaMap();
-    g.bestFit.forEach(function (id) {
+    var cf = g.curveFit, ids = (cf && cf.ids) || [];
+    if (!ids.length) { out.appendChild(el('div', { class: 'hint', text: 'Select a series above.' })); return; }
+    out.appendChild(el('div', { class: 'hint', style: 'margin-bottom:4px', text: CURVE_MODELS[cf.model] + ' fit over ' + domainLabel(cf.domain) }));
+    var meta = graphMetaMap(), u = currentUnit(), us = u ? (' ' + u) : '';
+    ids.forEach(function (id) {
       var m = meta[id]; if (!m) return;
-      var r = resolveDomain(m, g.bestFitDomain);
-      var sl = Analysis.sliceXY(m.xs, m.rawYs, r[0], r[1]);
-      var reg = Analysis.linearRegression(sl.xs, sl.ys);
+      var r = resolveDomain(m, cf.domain);
+      var res = computeCurveFit(m, r, cf);
       out.appendChild(el('div', { html: '<b>' + m.label + '</b>' }));
-      if (!reg) { out.appendChild(el('div', { html: '<span class="rk">not enough points</span>' })); return; }
-      out.appendChild(el('div', { html: '<span class="rk">slope</span><span class="rv">' + fmt(reg.slope, 4) + ' /s</span>' }));
-      out.appendChild(el('div', { html: '<span class="rk">intercept</span><span class="rv">' + fmt(reg.intercept, 3) + '</span>' }));
-      out.appendChild(el('div', { html: '<span class="rk">R²</span><span class="rv">' + fmt(reg.r2, 4) + '</span>' }));
+      if (!res) { out.appendChild(el('div', { html: '<span class="rk">couldn’t fit this range — try another model or range</span>' })); return; }
+      function row(k, v) { out.appendChild(el('div', { html: '<span class="rk">' + k + '</span><span class="rv">' + v + '</span>' })); }
+      var p = res.params;
+      if (cf.model === 'linear') { row('slope', fmt(p.slope, 4) + (u ? (' ' + u + '/s') : ' /s')); row('intercept', fmt(p.intercept, 3) + us); }
+      else if (cf.model === 'poly') { row('degree', p.degree); }
+      else if (cf.model === 'log') { row('a', fmt(p.a, 3)); row('b · ln(t)', fmt(p.b, 4)); }
+      else { row('direction', p.direction); row('τ (time constant)', fmt(p.tau, 2) + ' s'); row('half-life', fmt(p.halfLife, 2) + ' s'); row('asymptote T∞', fmt(p.Tinf, 3) + us); }
+      row('R²', fmt(res.r2, 4));
     });
   }
 
@@ -1576,6 +1690,39 @@
     g.manualLines.forEach(function (l) { list.appendChild(manualRow(g, l, 'line')); });
     if (!g.manualPoints.length && !g.manualLines.length) list.appendChild(el('div', { class: 'hint', text: 'No manual items yet.' }));
     wrap.appendChild(list);
+    return wrap;
+  }
+
+  /* ---- Anchored annotations: a text note pinned to a point, with a leader line
+   * and a draggable label box. ---- */
+  function addAnnotationAt(x, y) {
+    var g = store.graph();
+    if (!g.annotations) g.annotations = [];
+    g.annotations.push({ id: store.uid('an'), x: x, y: y, text: 'Note', dx: 0, dy: -42 });
+    store.commit('annot-add');
+  }
+  function annotationEditor(g) {
+    if (!g.annotations) g.annotations = [];
+    var wrap = el('div', {});
+    wrap.appendChild(el('p', { class: 'hint', text: 'Pin a note to a point on the chart. Double-click the chart to drop one where you click, then drag the note to place it or drag its dot to re-anchor. Long notes wrap at the graph edge; Shift+Enter adds a line. Notes are included in exports.' }));
+    wrap.appendChild(el('button', { class: 'btn sm', html: Icons.plus + ' Add note', title: 'Add a note at the center of the current view', onclick: function () { var v = view.getView(); addAnnotationAt((v.xMin + v.xMax) / 2, (v.yMin + v.yMax) / 2); } }));
+    if (g.annotations.length) {
+      wrap.appendChild(capLabel('Notes', 12));
+      var list = el('div', {});
+      g.annotations.forEach(function (a) {
+        var inp = el('textarea', { class: 'mp-label mp-note', rows: '1', placeholder: 'Note text' });
+        inp.value = a.text || '';
+        function grow() { inp.style.height = 'auto'; inp.style.height = Math.min(120, inp.scrollHeight) + 'px'; }
+        inp.addEventListener('input', function () { a.text = inp.value; grow(); view.render(); });
+        inp.addEventListener('change', function () { store.commit('annot-text'); });
+        setTimeout(grow, 0);
+        var del = el('button', { class: 'mini', title: 'Delete', html: Icons.trash, onclick: function () { g.annotations = g.annotations.filter(function (x) { return x !== a; }); store.commit('annot-del'); } });
+        list.appendChild(el('div', { class: 'mp-entry mp-entry-top' }, [inp, del]));
+      });
+      wrap.appendChild(list);
+    } else {
+      wrap.appendChild(el('div', { class: 'hint', style: 'margin-top:10px', text: 'No notes yet.' }));
+    }
     return wrap;
   }
   function manualRow(g, item, kind) {
@@ -2052,6 +2199,7 @@
             toast('Loaded ' + ok.length + ' trials across ' + store.data.experiments.length + ' experiment' + (store.data.experiments.length > 1 ? 's' : '') +
               (warned ? ' · ' + warned + ' with data warnings (see Details)' : ''));
           }
+          offerAutosaveRestore(folderName);   // recover unsaved analysis from a prior session
         }
         if (skipped.length) unmatchedDialog(skipped, ok.length);
       });
@@ -2133,51 +2281,113 @@
   }
 
   /* ============================ SESSION =============================== */
+  /* ---- Session persistence ------------------------------------------------
+   * Three layers of protection against losing analysis:
+   *   1. Quick Save (Ctrl+S) writes back to the file you last saved/opened — no
+   *      dialog once a file exists.
+   *   2. Save Session As… picks a new file (and remembers it for quick save).
+   *   3. A rolling localStorage autosave captures unsaved work every second, and
+   *      offers to restore it the next time you open the same data folder. ---- */
+  var lastSessionHandle = null, lastSessionName = null;
+  var AUTOSAVE_KEY = 'thermoscope.autosave', autosaveTimer = null;
+
+  function buildSession(mode) {
+    var ses = store.serializeSession();
+    if (mode && mode !== 'all') {
+      for (var k in ses.workspace.graphs) {
+        var g = ses.workspace.graphs[k];
+        ses.workspace.graphs[k] = Object.assign(TS.freshGraph(), mode === 'manual'
+          ? { manualPoints: g.manualPoints, manualLines: g.manualLines, annotations: g.annotations } : {});
+      }
+    }
+    return ses;
+  }
+  function sessionBlob(ses) { return textBlob(JSON.stringify(ses, null, 2), 'application/json'); }
+  function writeToHandle(handle, blob) { return handle.createWritable().then(function (w) { return w.write(blob).then(function () { return w.close(); }); }); }
+  function markSaved(name) { store.state.dirty = false; try { localStorage.removeItem(AUTOSAVE_KEY); } catch (e) {} toast('Saved · ' + name); }
+
+  function quickSave() {
+    if (noData()) return;
+    if (lastSessionHandle) {
+      writeToHandle(lastSessionHandle, sessionBlob(buildSession('all')))
+        .then(function () { markSaved(lastSessionName || lastSessionHandle.name || 'session'); })
+        .catch(function () { toast('Could not save to that file — choose a location'); saveSessionDialog(); });
+    } else { saveSessionDialog(); }
+  }
   function saveSessionDialog() {
+    if (noData()) return;
     var mode = 'all', name = (store.data.folderName || 'session') + '.thermo.json';
     var body = el('div', {});
     body.appendChild(field('File name', (function () { var i = el('input', { class: 'input', value: name }); i.addEventListener('input', function () { name = i.value; }); return i; })()));
     body.appendChild(el('label', { style: 'display:block;font-size:11px;color:var(--text-3);margin:8px 0 8px;font-weight:600;text-transform:uppercase;letter-spacing:.4px', text: 'Include analysis work' }));
     var list = el('div', { class: 'radio-list' });
-    [['all', 'All analysis work', 'Averages, areas, fits, smoothing, cursors, thresholds, manual items'],
-     ['manual', 'Manual points & lines only', 'Keep annotations, drop computed overlays'],
+    [['all', 'All analysis work', 'Statistics, fits, areas, smoothing, cursors, thresholds, manual items & notes'],
+     ['manual', 'Manual items & notes only', 'Keep points, lines, and annotations; drop computed overlays'],
      ['none', 'None', 'Styling & layout only']].forEach(function (o) {
       var row = el('div', { class: 'radio-row' + (mode === o[0] ? ' on' : ''), onclick: function () { mode = o[0]; Array.prototype.forEach.call(list.children, function (c, i) { c.classList.toggle('on', ['all', 'manual', 'none'][i] === mode); }); } },
         [el('span', { class: 'dot' }), el('div', {}, [el('div', { class: 'rl-title', text: o[1] }), el('div', { class: 'rl-sub', text: o[2] })])]);
       list.appendChild(row);
     });
     body.appendChild(list);
-    modal({ title: 'Save Session', body: body, actions: [
+    modal({ title: 'Save Session As', body: body, actions: [
       { label: 'Cancel' },
       { label: 'Save', primary: true, onClick: function () {
-        var ses = store.serializeSession();
-        if (mode !== 'all') {
-          for (var k in ses.workspace.graphs) {
-            var g = ses.workspace.graphs[k];
-            var keepManual = mode === 'manual';
-            ses.workspace.graphs[k] = Object.assign(TS.freshGraph(), keepManual ? { manualPoints: g.manualPoints, manualLines: g.manualLines } : {});
-          }
-        }
-        saveWithPicker(name, fsTypes('application/json', ['.json']),
-          function (cb) { cb(textBlob(JSON.stringify(ses, null, 2), 'application/json')); });
-        store.state.dirty = false;
+        var blob = sessionBlob(buildSession(mode));
+        if (window.showSaveFilePicker) {
+          window.showSaveFilePicker({ suggestedName: name, types: fsTypes('application/json', ['.json']) })
+            .then(function (handle) { lastSessionHandle = handle; lastSessionName = handle.name || name; return writeToHandle(handle, blob); })
+            .then(function () { markSaved(lastSessionName || name); })
+            .catch(function (e) { if (e && e.name === 'AbortError') return; downloadBlob(blob, name); markSaved(name + ' (Downloads)'); });
+        } else { downloadBlob(blob, name); markSaved(name + ' (Downloads)'); }
       } },
     ] });
   }
+  function applyLoadedSession(txt, handle) {
+    var obj; try { obj = JSON.parse(txt); } catch (e) { toast('Not a valid session file'); return; }
+    if (!obj.workspace) { toast('Unrecognized session file'); return; }
+    if (handle) { lastSessionHandle = handle; lastSessionName = handle.name; }
+    if (store.data.experiments.length) { store.loadSessionInto(obj); store.state.dirty = false; toast('Session loaded'); }
+    else { store.prepareRestore(obj); toast('Open the matching data folder to finish loading'); openFolder(); }
+  }
   function loadSession() {
+    if (window.showOpenFilePicker) {
+      window.showOpenFilePicker({ types: fsTypes('application/json', ['.json']) })
+        .then(function (handles) { var h = handles[0]; return h.getFile().then(function (f) { return f.text(); }).then(function (txt) { applyLoadedSession(txt, h); }); })
+        .catch(function (e) { if (e && e.name === 'AbortError') return; loadSessionViaInput(); });
+    } else { loadSessionViaInput(); }
+  }
+  function loadSessionViaInput() {
     var inp = el('input', { type: 'file', accept: '.json,application/json', style: 'display:none' });
     document.body.appendChild(inp);
     inp.addEventListener('change', function () {
-      var f = inp.files[0]; if (!f) return;
-      f.text().then(function (txt) {
-        var obj; try { obj = JSON.parse(txt); } catch (e) { toast('Not a valid session file'); return; }
-        if (!obj.workspace) { toast('Unrecognized session file'); return; }
-        if (store.data.experiments.length) { store.loadSessionInto(obj); toast('Session loaded'); }
-        else { store.prepareRestore(obj); toast('Open the matching data folder to finish loading'); openFolder(); }
-        inp.remove();
-      });
+      var f = inp.files[0]; if (!f) { inp.remove(); return; }
+      f.text().then(function (txt) { applyLoadedSession(txt, null); inp.remove(); });
     });
     inp.click();
+  }
+
+  /* Rolling autosave: only while there is unsaved work, so a plain reload of an
+   * untouched folder never overwrites real work sitting in the slot. */
+  function autosaveNow() {
+    if (noData() || !store.state.dirty) return;
+    try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({ savedAt: Date.now(), folderName: store.data.folderName, session: store.serializeSession() })); } catch (e) {}
+  }
+  function scheduleAutosave() { clearTimeout(autosaveTimer); autosaveTimer = setTimeout(autosaveNow, 1000); }
+  function friendlyAgo(ts) {
+    var s = Math.round((Date.now() - ts) / 1000);
+    if (s < 60) return 'just now';
+    var m = Math.round(s / 60); if (m < 60) return m + ' min ago';
+    var h = Math.round(m / 60); if (h < 24) return h + ' hr ago';
+    return new Date(ts).toLocaleString();
+  }
+  function offerAutosaveRestore(folderName) {
+    var raw; try { raw = localStorage.getItem(AUTOSAVE_KEY); } catch (e) { return; }
+    if (!raw) return;
+    var data; try { data = JSON.parse(raw); } catch (e) { return; }
+    if (!data || !data.session || data.folderName !== folderName) return;
+    toast('Unsaved analysis from ' + friendlyAgo(data.savedAt) + ' found for this folder', { label: 'Restore', onClick: function () {
+      store.loadSessionInto(data.session); store.state.dirty = false; toast('Restored autosaved analysis');
+    } });
   }
 
   /* ============================ HELP DIALOGS =========================== */
@@ -2211,7 +2421,9 @@
       '<div><span class="rk">Add to selection</span><span class="rv">Ctrl + click more</span></div>' +
       '<div><span class="rk">Clear selection</span><span class="rv">Click empty area</span></div>' +
       '<div><span class="rk">Actions on selection</span><span class="rv">Right-click chart</span></div>' +
-      '<div><span class="rk">Rename the graph</span><span class="rv">Click its on-chart title</span></div></div>',
+      '<div><span class="rk">Rename the graph</span><span class="rv">Click its on-chart title</span></div>' +
+      '<div><span class="rk">Move the legend</span><span class="rv">Drag it to a corner</span></div>' +
+      '<div><span class="rk">Save session</span><span class="rv">Ctrl + S</span></div></div>',
       actions: [{ label: 'Close', primary: true }] });
   }
   function guideDialog() {
@@ -2222,10 +2434,12 @@
       '<li><b>Selecting</b> — <code>Ctrl</code>-click a line to select it (Ctrl-click more to add); the rest dim. Click an empty area to clear, or right-click for quick actions.</li>' +
       '<li><b>Colors</b> — each series keeps a stable, distinct color across every mode. The <b>Color manager</b> (by the data list) switches between a muted and a vibrant palette, groups colors <i>by trial</i> or <i>by sensor</i>, or recolors just the visible traces so a crowded graph reads clearly. Click any swatch to choose your own.</li>' +
       '<li><b>Statistics</b> — plot the mean, median, mode, standard deviation, or a Mean&nbsp;±&nbsp;SD band across chosen datasets. Each line is frozen when added, so hiding a source trace won\'t change it. Statistics are named automatically; click a name to rename it.</li>' +
-      '<li><b>Analysis tools</b> — line of best fit, min / max / mean, area under the curve, smoothing (over an optional region), manual points and labeled lines, a dual-cursor measure, and threshold crossings. Each is kept per-graph, and its dataset picker has All / None and per-group quick-select.</li>' +
-      '<li><b>Navigation</b> — scroll or the zoom buttons to zoom, drag to pan. The pan bars snap to the data edges (hold <code>Ctrl</code> to pan freely) and take arrow keys for fine control. Each graph remembers its own zoom and pan.</li>' +
-      '<li><b>Renaming</b> — anything you can rename shows a small pencil on hover. Click the title on the chart to rename the graph; clear it to return to the automatic name.</li>' +
-      '<li><b>Units &amp; data</b> — pick Celsius, Fahrenheit, or As&nbsp;Recorded for the display and CSV export under <code>Settings &rsaquo; Preferences</code>, where a time cap can also limit how far each trial is plotted. Save PNG or SVG, or export organized CSV, from <code>Organize &amp; Export</code>.</li>' +
+      '<li><b>Features &amp; Settling</b> — read the peak, range, net change, time-to-peak, max rate, time-to-threshold and settling time for each dataset over a range, then export the whole table to CSV.</li>' +
+      '<li><b>Curve Fit</b> — fit a linear, polynomial, logarithmic, or exponential model over a range. Polynomial captures a spike-and-settle shape; the exponential reads the thermal time constant τ and asymptote (with a direction hint and optional fixed asymptote for exothermic runs). The curve can be solid or dotted and extended across the view.</li>' +
+      '<li><b>More tools</b> — area under the curve, smoothing (over an optional region), manual points and labeled lines, multi-line notes pinned to the chart (drag the note or its dot), a dual-cursor measure, and threshold crossings. Each is kept per-graph, and its dataset picker has All / None and per-group quick-select.</li>' +
+      '<li><b>Navigation &amp; legend</b> — scroll or the zoom buttons to zoom, drag to pan. The pan bars snap to the data edges (hold <code>Ctrl</code> to pan freely) and take arrow keys for fine control; each graph remembers its own view. Drag the legend to any corner to move it.</li>' +
+      '<li><b>Saving</b> — <code>Ctrl&nbsp;+&nbsp;S</code> saves your analysis back to a file (or <b>Save Session As…</b> for a new one). Unsaved work is autosaved and offered back the next time you open the same folder.</li>' +
+      '<li><b>Units &amp; data</b> — pick Celsius, Fahrenheit, or As&nbsp;Recorded for the display and CSV export under <code>Settings &rsaquo; Preferences</code>, where a time cap can also limit how far each trial is plotted. Export PNG, SVG, or organized CSV from <code>Organize &amp; Export</code>.</li>' +
       '</ul>',
       actions: [{ label: 'Close', primary: true }] });
   }
@@ -2405,6 +2619,10 @@
       onRendered: positionTitleHit,
       onManualPointMove: function (id, x, y) { var g = store.graph(); g.manualPoints.forEach(function (p) { if (p.id === id) { p.x = x; p.y = y; } }); },
       onManualPointDrop: function () { store.commit('manual-move'); },
+      onAnnotationMove: function (id, dx, dy) { var g = store.graph(); (g.annotations || []).forEach(function (a) { if (a.id === id) { a.dx = dx; a.dy = dy; } }); },
+      onAnnotationAnchorMove: function (id, x, y, dx, dy) { var g = store.graph(); (g.annotations || []).forEach(function (a) { if (a.id === id) { a.x = x; a.y = y; a.dx = dx; a.dy = dy; } }); },
+      onAnnotationDrop: function () { store.commit('annot-move'); },
+      onLegendMove: function (corner) { if (store.state.legendCorner !== corner) { store.state.legendCorner = corner; store.commit('legend-move'); } },
       onPlotDblClick: onPlotDblClick,
       onSeriesClick: onSeriesClick,
       onContextMenu: onChartContextMenu,
@@ -2459,6 +2677,7 @@
       if (mod && e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); store.undo(); }
       else if (mod && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) { e.preventDefault(); store.redo(); }
       else if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); openFolder(); }
+      else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); if (!noData()) quickSave(); }
       else if (mod && e.key === ',') { e.preventDefault(); preferencesDialog(); }
     });
 
@@ -2467,6 +2686,7 @@
     });
 
     store.subscribe(updateAll);
+    store.subscribe(scheduleAutosave);   // rolling crash-protection autosave
     updateAll();
 
     // Testing hook (harmless): drive a load without the native folder picker.
@@ -2485,7 +2705,8 @@
 
   function onPlotDblClick(x, y) {
     var g = store.graph();
-    // Prefer filling cursor slots if the cursor tool is active/open; else drop a point.
+    // Route the double-click to whichever placement tool is open.
+    if (toolOpen.annotate) { addAnnotationAt(x, y); return; }
     if (toolOpen.cursor && g.cursors.length < 2) { g.cursors.push(x); store.commit('cursor-add'); return; }
     g.manualPoints.push({ id: store.uid('pt'), x: x, y: y, color: accentHex(), customLabel: null, showLabel: true });
     store.commit('manual-dblclick');

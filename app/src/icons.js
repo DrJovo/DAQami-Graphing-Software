@@ -24,6 +24,8 @@
     trash: svg('<path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/>'),
     pencil: svg('<path d="M14.5 5.5l4 4M4 20l1-4L16 5a1.5 1.5 0 0 1 2 0l1 1a1.5 1.5 0 0 1 0 2L8 19z"/>'),
     zoomBoth: svg('<circle cx="10" cy="10" r="6.4"/><path d="M20.5 20.5l-5.6-5.6"/><path d="M10 7.2v5.6M7.2 10h5.6"/>'),
+    expfit: svg('<path d="M4 4v16h16" /><path d="M4 18C10 18 8 6 20 6" />'),
+    note: svg('<path d="M5 4h14a1 1 0 0 1 1 1v10l-5 5H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M20 15h-4a1 1 0 0 0-1 1v4"/><path d="M8 9h8M8 13h4"/>'),
     zoomX: svg('<circle cx="10" cy="10" r="6.4"/><path d="M20.5 20.5l-5.6-5.6"/><path d="M7.3 10h5.4M8.9 8.4 7.3 10l1.6 1.6M11.1 8.4 12.7 10l-1.6 1.6"/>'),
     zoomY: svg('<circle cx="10" cy="10" r="6.4"/><path d="M20.5 20.5l-5.6-5.6"/><path d="M10 7.3v5.4M8.4 8.9 10 7.3l1.6 1.6M8.4 11.1 10 12.7l1.6-1.6"/>'),
     panelLeft: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>'),

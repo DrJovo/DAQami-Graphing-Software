@@ -62,24 +62,37 @@ no exe, but the same feel. (See "About a `.exe`" below for the trade-offs.)
      to pan. The X/Y pan sliders snap to the data edges (hold **Ctrl** to pan
      freely) and take arrow keys for fine control. Each graph remembers its own
      zoom/pan, so switching between graphs and back returns you where you left off.
-   - **Naming** — click the title on the chart to rename the graph; clear it to
-     return to the automatic name.
+   - **Naming & legend** — click the title on the chart to rename the graph (clear
+     it to return to the automatic name); drag the legend to any of the four
+     corners and it snaps into place.
    - **Analysis tools** (right panel, per-graph — they never bleed between graphs):
-     Statistics (mean, median, mode, standard deviation, or a mean with a ±SD
-     band — each frozen when added and named automatically, so hiding a source
-     trace never shifts it), Min/Max/Mean, Area under curve, Line of best fit,
-     Gaussian smoothing over an optional region (blended back into the raw data at
-     its edges) with between-sample prediction, manual plotting (`(2, 7)`,
-     `x = 5`, `y = 30` — draggable points and labeled reference lines), a
-     dual-cursor Δ measure, and threshold-crossing times (every crossing listed
-     with its direction). Each tool's picker has All / None and per-group
-     quick-select buttons.
+     - *Statistics* — mean, median, mode, standard deviation, or a mean with a ±SD
+       band; each is frozen when added and named automatically, so hiding a source
+       trace never shifts it.
+     - *Features & Settling* — per-dataset peak, range, mean, net change,
+       time-to-peak, max rate, time-to-threshold and settling time over a range,
+       with a one-click **CSV export** of the table.
+     - *Curve Fit* — fit a **linear, polynomial (deg 2–4), logarithmic, or
+       exponential** model over a range. Polynomial captures a spike-and-settle
+       shape; the exponential reads the thermal time constant τ and asymptote
+       (with a direction hint and an optional fixed asymptote for exothermic runs
+       that never fully settle). The fitted curve can be solid or dotted and can
+       extend across the whole view.
+     - *Area under curve* and *Gaussian smoothing* over an optional region
+       (blended back into the raw data at its edges) with between-sample prediction.
+     - *Manual plotting* (`(2, 7)`, `x = 5`, `y = 30` — draggable points and
+       labeled reference lines), *Annotations* (a multi-line note pinned to a
+       point — drag the note or its anchor dot independently), a *dual-cursor Δ
+       measure*, and *threshold-crossing* times (every crossing listed with its
+       direction).
+     Each tool's picker has All / None and per-group quick-select buttons.
    - **Hover** anywhere on a trace (or a statistics line) to read time,
      temperature, and the local rate (d/dt).
 
-4. **Export** the graph as **PNG** (1×–4×) or **SVG** (vector), and **Save/Load
-   Session** to keep your styling and analysis (choose to include all analysis,
-   just manual annotations, or none).
+4. **Export & save.** Export the graph as **PNG** (1×–4×) or **SVG** (vector).
+   **Save Session** (Ctrl+S) writes your styling and analysis back to a file, and
+   **Save Session As…** picks a new one; unsaved work is also autosaved in the
+   background and offered back the next time you open the same data folder.
 
 **Preferences** (Settings → Preferences) cover the temperature unit for both the
 display and the exported CSV (Celsius, Fahrenheit, or As Recorded), decimal

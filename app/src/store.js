@@ -22,10 +22,13 @@
     return {
       name: null,             // custom graph name (null = auto-generated)
       manualPoints: [], manualLines: [],
+      annotations: [],        // [{ id, x, y, text, dx, dy }] — anchored labels with a leader line
       stats: [],              // [{ id, kind:'mean'|'median'|'mode'|'stddev'|'meanstd', datasetIds:[...], color, name }]
       statPick: null,         // remembered dataset selection for the Statistics tool
-      bestFit: [], bestFitDomain: freshDomain(),   // [datasetId,...]
-      minmax: [], minmaxDomain: freshDomain(),     // [datasetId,...]
+      bestFit: [], bestFitDomain: freshDomain(),   // [datasetId,...] (legacy; migrated into curveFit)
+      // Unified curve fit: model + per-model options, one line style, optional extend.
+      curveFit: { ids: [], domain: freshDomain(), model: 'exp', polyDegree: 3, direction: 'auto', baseline: null, style: 'dotted', extend: true },
+      features: [], featureDomain: freshDomain(), featureOpts: { threshold: null, settleBand: 1 }, // features & settling
       areas: [], areaDomain: freshDomain(),        // [datasetId,...]
       smooth: {},             // datasetId -> { on:bool, strength:number }
       smoothDomain: freshDomain(),   // x-range the smoothing is applied over (blended at its edges)
@@ -54,6 +57,7 @@
         plotType: 'line',
         showGrid: { major: true, minor: false },
         legend: true,
+        legendCorner: 'tr',      // 'tl' | 'tr' | 'bl' | 'br'
         markerSize: 3,
         lineWidth: 1.8,
         datasetStyles: {},
@@ -74,6 +78,7 @@
       return clone({
         theme: s.theme, currentExperiment: s.currentExperiment, graphMode: s.graphMode,
         modeSelector: s.modeSelector, plotType: s.plotType, showGrid: s.showGrid, legend: s.legend,
+        legendCorner: s.legendCorner,
         markerSize: s.markerSize, lineWidth: s.lineWidth, datasetStyles: s.datasetStyles,
         trialOffsets: s.trialOffsets, graphs: s.graphs, custom: s.custom,
       });
@@ -83,6 +88,7 @@
       var d = clone(snap);
       s.theme = d.theme; s.currentExperiment = d.currentExperiment; s.graphMode = d.graphMode;
       s.modeSelector = d.modeSelector; s.plotType = d.plotType; s.showGrid = d.showGrid; s.legend = d.legend;
+      if (d.legendCorner) s.legendCorner = d.legendCorner;
       s.markerSize = d.markerSize; s.lineWidth = d.lineWidth; s.datasetStyles = d.datasetStyles;
       s.trialOffsets = d.trialOffsets; s.graphs = d.graphs;
       if (d.custom) s.custom = d.custom;

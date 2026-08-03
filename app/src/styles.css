@@ -339,12 +339,16 @@ table.data-table tr:hover td.idx, table.data-table tr:hover td.time { background
 
 /* toast */
 .toast-host { position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%); z-index: 400; display: flex; flex-direction: column; gap: 8px; align-items: center; }
-.toast { background: var(--text); color: var(--surface); padding: 9px 16px; border-radius: 20px; font-size: var(--fs-sm); box-shadow: var(--menu-shadow); opacity: 0; transform: translateY(8px); transition: all .2s; font-weight: 500; }
+.toast { display: inline-flex; align-items: center; gap: 12px; background: var(--text); color: var(--surface); padding: 9px 10px 9px 16px; border-radius: 20px; font-size: var(--fs-sm); box-shadow: var(--menu-shadow); opacity: 0; transform: translateY(8px); transition: all .2s; font-weight: 500; }
 .toast.show { opacity: 1; transform: none; }
+.toast-action { background: var(--accent); color: #fff; border: 0; padding: 4px 12px; border-radius: 14px; font-weight: 600; font-size: var(--fs-xs); cursor: pointer; }
+.toast-action:hover { filter: brightness(1.08); }
 
 /* manual-item rows */
 .mp-entry .mp-label { flex: 1; height: 26px; min-width: 0; background: var(--sunken); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 0 8px; color: var(--text); outline: none; font-size: var(--fs-xs); }
 .mp-entry .mp-label:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
+.mp-entry.mp-entry-top { align-items: flex-start; }
+.mp-entry textarea.mp-note { height: auto; min-height: 26px; padding: 5px 8px; line-height: 1.4; font-family: var(--ui); resize: none; overflow: hidden; }
 .mp-entry .mini { width: 26px; height: 26px; flex: 0 0 auto; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); }
 .mp-entry .mini:hover { background: var(--surface-3); }
 .mp-entry .mini svg { width: 14px; height: 14px; }

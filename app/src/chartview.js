@@ -97,6 +97,7 @@
       this._scene = scene;
       if (this.autoMode && this._autoDirty) { this._computeAutoBounds(scene); this._autoDirty = false; }
       scene.view = this.view;
+      if (this._legendDrag) scene._legendDrag = this._legendDrag;   // live legend follow while dragging
 
       var c = this.ctx;
       c.setTransform(this._dpr, 0, 0, this._dpr, 0, 0);
@@ -212,6 +213,25 @@
       if (e.button !== 0) return;    // left button only (right = context menu)
       var p = this._rel(e);
       if (!this._inPlot(p) || !this._layout.sx) return;
+      // drag an annotation's anchor dot (re-anchors; the box stays put)
+      var anc = this._hitAnnotationAnchor(p);
+      if (anc) {
+        this._drag = { type: 'anchor', id: anc.id, boxX: anc.x + anc.w / 2, boxY: anc.y + anc.h / 2 };
+        this.canvas.style.cursor = 'grabbing'; return;
+      }
+      // drag an annotation label
+      var ann = this._hitAnnotation(p);
+      if (ann) {
+        var L = this._layout, a = this._annotationById(ann.id);
+        this._drag = { type: 'annot', id: ann.id, ax: L.sx.toPixel(a.x), ay: L.sy.toPixel(a.y) };
+        this.canvas.style.cursor = 'grabbing'; return;
+      }
+      // drag the legend
+      var lb = this._hitLegend(p);
+      if (lb) {
+        this._drag = { type: 'legend', offX: p.x - lb.x, offY: p.y - lb.y };
+        this._legendDrag = { x: lb.x, y: lb.y }; this.canvas.style.cursor = 'grabbing'; return;
+      }
       // hit-test manual points for dragging
       var hit = this._hitManualPoint(p);
       if (hit) { this._drag = { type: 'point', id: hit.id }; this.canvas.style.cursor = 'grabbing'; return; }
@@ -226,6 +246,26 @@
         var px = L.sx.toPixel(pts[i].x), py = L.sy.toPixel(pts[i].y);
         if (Math.abs(px - p.x) <= 8 && Math.abs(py - p.y) <= 8) return pts[i];
       }
+      return null;
+    },
+    _hitAnnotation: function (p) {
+      var boxes = this._layout && this._layout.annotationBoxes; if (!boxes) return null;
+      for (var i = boxes.length - 1; i >= 0; i--) { var b = boxes[i]; if (p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h) return b; }
+      return null;
+    },
+    _hitAnnotationAnchor: function (p) {
+      var boxes = this._layout && this._layout.annotationBoxes; if (!boxes) return null;
+      for (var i = boxes.length - 1; i >= 0; i--) { var b = boxes[i]; if (b.ax != null && Math.abs(p.x - b.ax) <= 8 && Math.abs(p.y - b.ay) <= 8) return b; }
+      return null;
+    },
+    _annotationById: function (id) {
+      var arr = this._scene && this._scene.overlays && this._scene.overlays.annotations || [];
+      for (var i = 0; i < arr.length; i++) if (arr[i].id === id) return arr[i];
+      return null;
+    },
+    _hitLegend: function (p) {
+      var b = this._layout && this._layout.legendBox;
+      if (b && p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h) return b;
       return null;
     },
     _onMove: function (e) {
@@ -247,6 +287,20 @@
           var x = L2.sx.toData(p.x), y = L2.sy.toData(p.y);
           if (this.opts.onManualPointMove) this.opts.onManualPointMove(this._drag.id, x, y);
           this.render();
+        } else if (this._drag.type === 'annot') {
+          if (this.opts.onAnnotationMove) this.opts.onAnnotationMove(this._drag.id, p.x - this._drag.ax, p.y - this._drag.ay);
+          this.render();
+        } else if (this._drag.type === 'anchor') {
+          var La = this._layout;
+          if (this.opts.onAnnotationAnchorMove) this.opts.onAnnotationAnchorMove(this._drag.id, La.sx.toData(p.x), La.sy.toData(p.y), this._drag.boxX - p.x, this._drag.boxY - p.y);
+          this.render();
+        } else if (this._drag.type === 'legend') {
+          var Ll = this._layout, lb = Ll.legendBox, plt = Ll.plot;
+          var nx = p.x - this._drag.offX, ny = p.y - this._drag.offY;
+          var w = lb ? lb.w : 0, h = lb ? lb.h : 0, ccx = nx + w / 2, ccy = ny + h / 2;
+          var snap = (ccy < plt.y + plt.h / 2 ? 't' : 'b') + (ccx < plt.x + plt.w / 2 ? 'l' : 'r');
+          this._legendDrag = { x: nx, y: ny, snapCorner: snap };
+          this.render();
         }
         return;
       }
@@ -254,8 +308,13 @@
       // modal / color popover sitting above the chart doesn't drive the crosshair.
       if (!this._layout || !this._layout.sx) return;
       if (e.target === this.canvas && this._inPlot(p)) {
-        this.canvas.style.cursor = this._hitManualPoint(p) ? 'grab' : 'crosshair';
-        this._updateHover(p);
+        if (this._hitAnnotationAnchor(p) || this._hitAnnotation(p) || this._hitLegend(p)) {
+          this.canvas.style.cursor = 'grab';
+          if (this._hover) { this._hover = null; this.render(); if (this.opts.onHoverEnd) this.opts.onHoverEnd(); }
+        } else {
+          this.canvas.style.cursor = this._hitManualPoint(p) ? 'grab' : 'crosshair';
+          this._updateHover(p);
+        }
       } else {
         if (this._hover) { this._hover = null; this.render(); if (this.opts.onHoverEnd) this.opts.onHoverEnd(); }
         if (e.target === this.canvas) this.canvas.style.cursor = 'default';
@@ -263,11 +322,17 @@
     },
     _onUp: function () {
       if (this._drag) {
-        var wasPoint = this._drag.type === 'point';
+        var type = this._drag.type;
         this._drag = null;
         this.canvas.style.cursor = 'crosshair';
-        if (wasPoint && this.opts.onManualPointDrop) this.opts.onManualPointDrop();
-        else if (this.opts.onViewChange) this.opts.onViewChange();
+        if (type === 'point' && this.opts.onManualPointDrop) this.opts.onManualPointDrop();
+        else if ((type === 'annot' || type === 'anchor') && this.opts.onAnnotationDrop) this.opts.onAnnotationDrop();
+        else if (type === 'legend') {
+          var corner = (this._legendDrag && this._legendDrag.snapCorner) || 'tr';
+          this._legendDrag = null;
+          if (this.opts.onLegendMove) this.opts.onLegendMove(corner);
+          this.render();
+        } else if (this.opts.onViewChange) this.opts.onViewChange();
       }
       if (this._down && !this._down.moved && this.opts.onSeriesClick) {
         this.opts.onSeriesClick(this._hitSeries({ x: this._down.x, y: this._down.y }), { ctrl: this._down.ctrl });
