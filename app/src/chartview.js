@@ -213,6 +213,7 @@
       if (e.button !== 0) return;    // left button only (right = context menu)
       var p = this._rel(e);
       if (!this._inPlot(p) || !this._layout.sx) return;
+      this._dragStart = { x: p.x, y: p.y }; this._dragMoved = false;
       // drag an annotation's anchor dot (re-anchors; the box stays put)
       var anc = this._hitAnnotationAnchor(p);
       if (anc) {
@@ -271,6 +272,7 @@
     _onMove: function (e) {
       var p = this._rel(e);
       if (this._down && !this._down.moved && (Math.abs(p.x - this._down.x) > 3 || Math.abs(p.y - this._down.y) > 3)) this._down.moved = true;
+      if (this._dragStart && !this._dragMoved && (Math.abs(p.x - this._dragStart.x) > 3 || Math.abs(p.y - this._dragStart.y) > 3)) this._dragMoved = true;
       if (this._drag) {
         if (this._drag.type === 'pan') {
           var L = this._layout;
@@ -322,11 +324,11 @@
     },
     _onUp: function () {
       if (this._drag) {
-        var type = this._drag.type;
+        var type = this._drag.type, id = this._drag.id, moved = this._dragMoved;
         this._drag = null;
         this.canvas.style.cursor = 'crosshair';
-        if (type === 'point' && this.opts.onManualPointDrop) this.opts.onManualPointDrop();
-        else if ((type === 'annot' || type === 'anchor') && this.opts.onAnnotationDrop) this.opts.onAnnotationDrop();
+        if (type === 'point') { if (moved && this.opts.onManualPointDrop) this.opts.onManualPointDrop(); else if (this.opts.onOverlayClick) this.opts.onOverlayClick('point', id); }
+        else if (type === 'annot' || type === 'anchor') { if (moved && this.opts.onAnnotationDrop) this.opts.onAnnotationDrop(); else if (this.opts.onOverlayClick) this.opts.onOverlayClick('annot', id); }
         else if (type === 'legend') {
           var corner = (this._legendDrag && this._legendDrag.snapCorner) || 'tr';
           this._legendDrag = null;

@@ -25,7 +25,6 @@
       annotations: [],        // [{ id, x, y, text, dx, dy }] — anchored labels with a leader line
       stats: [],              // [{ id, kind:'mean'|'median'|'mode'|'stddev'|'meanstd', datasetIds:[...], color, name }]
       statPick: null,         // remembered dataset selection for the Statistics tool
-      bestFit: [], bestFitDomain: freshDomain(),   // [datasetId,...] (legacy; migrated into curveFit)
       // Unified curve fit: model + per-model options, one line style, optional extend.
       curveFit: { ids: [], domain: freshDomain(), model: 'exp', polyDegree: 3, direction: 'auto', baseline: null, style: 'dotted', extend: true },
       features: [], featureDomain: freshDomain(), featureOpts: { threshold: null, settleBand: 1 }, // features & settling
@@ -140,6 +139,27 @@
       this.notify();
     },
 
+    /* Re-read a folder without starting over: rebuild the experiments but KEEP the
+     * workspace — existing datasets keep their styles/colors and every graph keeps
+     * its analysis. New datasets get default styles; removed ones simply stop
+     * rendering. Returns { added, removed } id counts. */
+    updateData: function (parsedTrials, folderName) {
+      var oldIds = {}; Object.keys(this._defaultStylesCache || {}).forEach(function (id) { oldIds[id] = 1; });
+      var experiments = DM.buildExperiments(parsedTrials);
+      this.data = { experiments: experiments, parsedTrials: parsedTrials, folderName: folderName, warnings: [] };
+      var fresh = DM.defaultStyles(experiments);
+      var added = 0, removed = 0, id;
+      for (id in fresh) { if (!this.state.datasetStyles[id]) { this.state.datasetStyles[id] = fresh[id]; added++; } }
+      for (id in oldIds) { if (!fresh[id]) removed++; }
+      this._defaultStylesCache = fresh;
+      this._colorN = Object.keys(fresh).length;
+      if (!DM.findExperiment(experiments, this.state.currentExperiment) && experiments.length)
+        this.state.currentExperiment = experiments[0].number;
+      this._ensureSelectors();
+      this.commit('update-data');
+      return { added: added, removed: removed };
+    },
+
     _ensureSelectors: function () {
       var exp = this.currentExperiment();
       if (!exp) return;
@@ -212,14 +232,24 @@
     /* ---- session ---- */
     serializeSession: function () {
       return {
-        app: 'ThermoScope', formatVersion: 1, savedAt: new Date().toISOString(),
+        app: 'ThermoScope', formatVersion: FORMAT_VERSION, savedAt: new Date().toISOString(),
         folderName: this.data.folderName, workspace: this._snapshot(),
       };
     },
-    prepareRestore: function (obj) { this._pendingRestore = obj.workspace; },
+    /* Upgrade a loaded session's workspace to the current shape: fill in fields
+     * added since it was saved, migrate legacy descriptors, and drop retired ones.
+     * Unknown fields from a NEWER file are simply ignored, so it never hard-fails. */
+    migrateWorkspace: function (ws) {
+      if (!ws || typeof ws !== 'object') return ws;
+      if (ws.legendCorner == null) ws.legendCorner = 'tr';
+      var graphs = ws.graphs || {};
+      for (var k in graphs) if (graphs.hasOwnProperty(k)) graphs[k] = migrateGraph(graphs[k]);
+      return ws;
+    },
+    prepareRestore: function (obj) { this._pendingRestore = this.migrateWorkspace(obj && obj.workspace); },
     loadSessionInto: function (obj) {
       // used when data already loaded and ids still valid
-      this._apply(obj.workspace);
+      this._apply(this.migrateWorkspace(obj && obj.workspace));
       if (!this.currentExperiment() && this.data.experiments.length)
         this.state.currentExperiment = this.data.experiments[0].number;
       this._ensureSelectors();
@@ -228,6 +258,27 @@
       this.notify();
     },
   };
+
+  var FORMAT_VERSION = 2;
+  /* Bring one saved graph up to the current freshGraph() shape. */
+  function migrateGraph(g) {
+    var out = Object.assign(freshGraph(), g || {});
+    // legacy Line-of-Best-Fit -> unified Curve Fit
+    if (g && g.bestFit && g.bestFit.length && (!out.curveFit || !out.curveFit.ids || !out.curveFit.ids.length)) {
+      out.curveFit = Object.assign(freshGraph().curveFit, { ids: g.bestFit.slice(), model: 'linear', domain: g.bestFitDomain || freshDomain() });
+    }
+    // legacy Min/Max/Mean -> Features & Settling
+    if (g && g.minmax && g.minmax.length && (!out.features || !out.features.length)) {
+      out.features = g.minmax.slice(); out.featureDomain = g.minmaxDomain || freshDomain();
+    }
+    // legacy standalone Exponential Fit -> Curve Fit (exp model)
+    if (g && g.expFit && g.expFit.length && (!out.curveFit || !out.curveFit.ids || !out.curveFit.ids.length)) {
+      out.curveFit = Object.assign(freshGraph().curveFit, { ids: g.expFit.slice(), model: 'exp', domain: g.expFitDomain || freshDomain() },
+        g.expFitOpts || {});
+    }
+    ['bestFit', 'bestFitDomain', 'minmax', 'minmaxDomain', 'expFit', 'expFitDomain', 'expFitOpts'].forEach(function (f) { delete out[f]; });
+    return out;
+  }
 
   TS.Store = Store;
   TS.freshGraph = freshGraph;

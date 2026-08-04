@@ -17,6 +17,7 @@
   var viewByGraph = {};      // graphKey -> { v:{xMin,xMax,yMin,yMax}, auto } — remembered zoom/pan per graph
   var viewKeyState = null;   // the graphKey the live view currently belongs to
   var ctrlHeld = false;      // live Ctrl/Cmd state, for disabling pan-bar snapping
+  var overlaySel = null;     // { kind:'annot'|'point', id } — clicked overlay for keyboard edit
   function hasSelection() { for (var k in selection) if (selection[k]) return true; return false; }
   function selectedIds() { return Object.keys(selection).filter(function (k) { return selection[k]; }); }
   function clearSelection() { selection = {}; if (view) view.render(); updateStatusCounts(); }
@@ -25,8 +26,40 @@
     if (mods && mods.ctrl) { if (id) { if (selection[id]) delete selection[id]; else selection[id] = true; } }
     else { selection = {}; if (id) selection[id] = true; }
     selectionKey = store.graphKey();
+    overlaySel = null;   // a series/empty click clears any overlay selection
     if (view) view.render();
     updateStatusCounts();
+  }
+  /* Overlay (note / manual point) click-selection for keyboard edits. */
+  function onOverlayClick(kind, id) {
+    overlaySel = { kind: kind, id: id };
+    selection = {};   // don't keep a series selection at the same time
+    if (view) view.render();
+  }
+  function selectedOverlayItem() {
+    if (!overlaySel) return null;
+    var g = store.graph();
+    var arr = overlaySel.kind === 'annot' ? g.annotations : g.manualPoints;
+    for (var i = 0; i < (arr || []).length; i++) if (arr[i].id === overlaySel.id) return arr[i];
+    return null;
+  }
+  function deleteSelectedOverlay() {
+    if (!overlaySel) return false;
+    var g = store.graph();
+    if (overlaySel.kind === 'annot') g.annotations = (g.annotations || []).filter(function (a) { return a.id !== overlaySel.id; });
+    else g.manualPoints = (g.manualPoints || []).filter(function (p) { return p.id !== overlaySel.id; });
+    overlaySel = null; store.commit('overlay-del'); return true;
+  }
+  function nudgeSelectedOverlay(kx, ky, big) {
+    var item = selectedOverlayItem(); if (!item) return false;
+    var step = big ? 10 : 1;
+    if (overlaySel.kind === 'annot') { item.dx = (item.dx || 0) + kx * step; item.dy = (item.dy || 0) + ky * step; }
+    else {
+      var v = view.getView(), L = view._layout; if (!L || !L.plot) return true;
+      item.x += kx * step * (v.xMax - v.xMin) / L.plot.w;
+      item.y -= ky * step * (v.yMax - v.yMin) / L.plot.h;
+    }
+    store.commit('overlay-nudge'); return true;
   }
   function updateStatusCounts() {
     if (noData()) { els.sbCount.textContent = ''; return; }
@@ -492,6 +525,7 @@
     var spec = [
       { name: 'File', items: [
         { label: 'Open Data Folder…', key: 'Ctrl+O', action: openFolder },
+        { label: 'Update Data Folder…', action: updateFolder, disabled: noData },
         { label: 'Organize & Export CSV…', action: organizeDialog, disabled: noData },
         { sep: 1 },
         { label: 'Save Session', key: 'Ctrl+S', action: quickSave, disabled: noData },
@@ -523,14 +557,6 @@
         { label: 'Fit All Data', action: function () { view && view.fitAll(); }, disabled: noData },
         { label: 'Fit Trial Window', action: function () { view && view.fitTrial(); }, disabled: noData },
         { label: 'Set Axis Bounds…', action: setBoundsDialog, disabled: noData },
-      ] },
-      { name: 'Analysis', items: [
-        { label: 'Add Average of Graphed Data', action: function () { addStat('mean', graphSeries().map(function (m) { return m.id; })); openTool('aggregate'); }, disabled: noData },
-        { label: 'Manual Plotting…', action: function () { openTool('manual'); }, disabled: noData },
-        { label: 'Dual-Cursor Measure', action: function () { openTool('cursor'); }, disabled: noData },
-        { label: 'Threshold Crossing…', action: function () { openTool('threshold'); }, disabled: noData },
-        { sep: 1 },
-        { label: 'Clear All Analysis (This Graph)', action: clearAnalysis, disabled: noData },
       ] },
       { name: 'Settings', items: [
         { label: 'Preferences…', key: 'Ctrl+,', action: preferencesDialog },
@@ -921,8 +947,8 @@
       ov.curveFit.push({ eval: res.eval, style: cf.style, extend: !!cf.extend,
         fitMin: r[0], fitMax: r[1], drawMin: ext[0], drawMax: ext[1], color: m.color, id: id });
     });
-    var featIds = g.features || g.minmax || [];
-    var featDom = g.featureDomain || g.minmaxDomain;
+    var featIds = g.features || [];
+    var featDom = g.featureDomain;
     featIds.forEach(function (id) {
       var m = meta[id]; if (!m) return;
       var r = resolveDomain(m, featDom);
@@ -1021,7 +1047,8 @@
       boundaries: computeBoundaries(), trialWindow: trialWindow(),
       grid: store.state.showGrid, legend: store.state.legend, legendCorner: store.state.legendCorner || 'tr',
       selection: selection, hasSelection: hasSelection(),
-      title: chartTitle(), xLabel: 'Time (s)', yLabel: yAxisLabel(),
+      selectedOverlay: overlaySel,
+      title: noData() ? null : chartTitle(), xLabel: 'Time (s)', yLabel: yAxisLabel(),
     };
   }
 
@@ -1265,7 +1292,7 @@
       body.appendChild(statisticsEditor(g));
     }, 'Plot the mean, median, mode, std-dev, or a Mean ± SD band across chosen datasets. Each line is frozen when added.');
 
-    tool(host, 'features', Icons.minmax, 'Features & Settling', (g.features || g.minmax || []).length > 0, function (body) {
+    tool(host, 'features', Icons.minmax, 'Features & Settling', (g.features || []).length > 0, function (body) {
       body.appendChild(featureEditor(g));
     }, 'Peaks, range, rates, time-to-threshold and settling time over a range — with a table you can export to CSV.');
 
@@ -1465,8 +1492,8 @@
 
   /* ---- Features & Settling: rich per-dataset metrics over a range, exportable. ---- */
   function featureEditor(g) {
-    if (!g.features) g.features = (g.minmax || []).slice();
-    if (!g.featureDomain) g.featureDomain = g.minmaxDomain || TS.freshDomain();
+    if (!g.features) g.features = [];
+    if (!g.featureDomain) g.featureDomain = TS.freshDomain();
     if (!g.featureOpts) g.featureOpts = { threshold: null, settleBand: 1 };
     var opts = g.featureOpts;
     var wrap = el('div', {});
@@ -1533,7 +1560,6 @@
   function curveFitEditor(g) {
     if (!g.curveFit) g.curveFit = { ids: [], domain: TS.freshDomain(), model: 'exp', polyDegree: 3, direction: 'auto', baseline: null, style: 'dotted', extend: true };
     var cf = g.curveFit;
-    if (!cf.ids.length && g.bestFit && g.bestFit.length) { cf.ids = g.bestFit.slice(); cf.model = 'linear'; if (g.bestFitDomain) cf.domain = g.bestFitDomain; }  // migrate legacy
     var wrap = el('div', {});
     wrap.appendChild(el('p', { class: 'hint', text: 'Fit a model to the selected data over a range. Polynomial captures a spike-and-settle shape; Exponential reads the thermal time constant τ and asymptote.' }));
     wrap.appendChild(datasetPicker('Fit', cf.ids, function (ids) { cf.ids = ids; store.commit('curvefit'); }));
@@ -2176,8 +2202,12 @@
   function kv(card, k, v) { card.appendChild(el('div', { class: 'kv', html: '<span class="k">' + k + '</span><span class="v">' + v + '</span>' })); }
 
   /* ============================ FOLDER / FILES ========================= */
-  function openFolder() { els.folderInput.value = ''; els.folderInput.click(); }
+  var pendingFolderUpdate = false;
+  function openFolder() { pendingFolderUpdate = false; els.folderInput.value = ''; els.folderInput.click(); }
+  // Re-pick the same folder and merge changes into the current workspace.
+  function updateFolder() { if (noData()) return; pendingFolderUpdate = true; els.folderInput.value = ''; els.folderInput.click(); }
   function onFolderPicked(e) {
+    var isUpdate = pendingFolderUpdate; pendingFolderUpdate = false;
     var files = Array.prototype.slice.call(e.target.files).filter(function (f) { return /\.csv$/i.test(f.name); });
     if (!files.length) { toast('No .csv files found in that folder'); return; }
     var folderName = files[0].webkitRelativePath ? files[0].webkitRelativePath.split('/')[0] : 'data';
@@ -2191,15 +2221,24 @@
         });
         if (ok.length) {
           clearCaches();
-          store.setData(parsed, folderName);
-          els.chartEmpty.style.display = 'none';
-          if (view) { view.setAutoDirty(); view.fitAll(); }
-          var warned = ok.filter(function (p) { return p.warnings && p.warnings.length; }).length;
-          if (!skipped.length) {
-            toast('Loaded ' + ok.length + ' trials across ' + store.data.experiments.length + ' experiment' + (store.data.experiments.length > 1 ? 's' : '') +
-              (warned ? ' · ' + warned + ' with data warnings (see Details)' : ''));
+          if (isUpdate) {
+            var diff = store.updateData(parsed, folderName);
+            if (view) view.setAutoDirty();
+            var parts = [];
+            if (diff.added) parts.push('+' + diff.added + ' new');
+            if (diff.removed) parts.push('−' + diff.removed + ' removed');
+            toast('Folder updated' + (parts.length ? ' · ' + parts.join(', ') : ' · no changes') + ' · analysis kept');
+          } else {
+            store.setData(parsed, folderName);
+            els.chartEmpty.style.display = 'none';
+            if (view) { view.setAutoDirty(); view.fitAll(); }
+            var warned = ok.filter(function (p) { return p.warnings && p.warnings.length; }).length;
+            if (!skipped.length) {
+              toast('Loaded ' + ok.length + ' trials across ' + store.data.experiments.length + ' experiment' + (store.data.experiments.length > 1 ? 's' : '') +
+                (warned ? ' · ' + warned + ' with data warnings (see Details)' : ''));
+            }
+            offerAutosaveRestore(folderName);   // recover unsaved analysis from a prior session
           }
-          offerAutosaveRestore(folderName);   // recover unsaved analysis from a prior session
         }
         if (skipped.length) unmatchedDialog(skipped, ok.length);
       });
@@ -2567,9 +2606,9 @@
     els.themeBtn.innerHTML = store.state.theme === 'dark' ? Icons.sun : Icons.moon;
     var nd = noData();
     var gk = nd ? null : store.graphKey();
-    if (gk !== selectionKey) { selection = {}; selectionKey = gk; }   // reset selection when the graph changes
+    if (gk !== selectionKey) { selection = {}; overlaySel = null; selectionKey = gk; }   // reset selection when the graph changes
     els.folderChip.textContent = nd ? 'No data loaded' : (store.data.folderName + ' · ' + store.data.experiments.length + ' exp · ' + store.data.parsedTrials.length + ' files');
-    ['organizeBtn', 'exportPngBtn', 'exportSvgBtn'].forEach(function (id) { els[id].disabled = nd; });
+    ['organizeBtn', 'exportPngBtn', 'exportSvgBtn', 'updateFolderBtn'].forEach(function (id) { els[id].disabled = nd; });
     els.undoBtn.disabled = !store.canUndo(); els.redoBtn.disabled = !store.canRedo();
     els.chartEmpty.style.display = nd ? 'flex' : 'none';
     if (!nd) els.sbMode.innerHTML = '<b>' + (store.state.graphMode === 'COMPARE_EXP' ? 'Custom' : DataModel.MODES[store.state.graphMode].label) + '</b>';
@@ -2597,7 +2636,7 @@
     ['menus', 'folderChip', 'themeBtn', 'toolbar', 'panelLeft', 'panelRight', 'leftScroll', 'rightScroll',
      'chartToolbar', 'chartWrap', 'chart', 'chartEmpty', 'rawWrap', 'detailsWrap', 'tooltip', 'overlay',
      'toastHost', 'folderInput', 'xPan', 'yPan', 'statusbar', 'sbMode', 'sbHover', 'sbCount',
-     'organizeBtn', 'exportPngBtn', 'exportSvgBtn', 'undoBtn', 'redoBtn'].forEach(function (id) { els[id] = $(id); });
+     'organizeBtn', 'exportPngBtn', 'exportSvgBtn', 'undoBtn', 'redoBtn', 'updateFolderBtn'].forEach(function (id) { els[id] = $(id); });
 
     Prefs.load();
     buildMenus();
@@ -2623,6 +2662,7 @@
       onAnnotationAnchorMove: function (id, x, y, dx, dy) { var g = store.graph(); (g.annotations || []).forEach(function (a) { if (a.id === id) { a.x = x; a.y = y; a.dx = dx; a.dy = dy; } }); },
       onAnnotationDrop: function () { store.commit('annot-move'); },
       onLegendMove: function (corner) { if (store.state.legendCorner !== corner) { store.state.legendCorner = corner; store.commit('legend-move'); } },
+      onOverlayClick: onOverlayClick,
       onPlotDblClick: onPlotDblClick,
       onSeriesClick: onSeriesClick,
       onContextMenu: onChartContextMenu,
@@ -2631,6 +2671,8 @@
     // toolbar buttons
     $('openFolderBtn').addEventListener('click', openFolder);
     $('openFolderBtn2').addEventListener('click', openFolder);
+    els.updateFolderBtn.innerHTML = Icons.refresh;
+    els.updateFolderBtn.addEventListener('click', updateFolder);
     els.organizeBtn.addEventListener('click', organizeDialog);
     els.exportPngBtn.addEventListener('click', exportPngDialog);
     els.exportSvgBtn.addEventListener('click', exportSvg);
@@ -2672,13 +2714,37 @@
     sizeYPan();
 
     // keyboard
+    function isTyping() {
+      var a = document.activeElement;
+      return a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || a.isContentEditable);
+    }
     document.addEventListener('keydown', function (e) {
       var mod = e.ctrlKey || e.metaKey;
-      if (mod && e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); store.undo(); }
-      else if (mod && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) { e.preventDefault(); store.redo(); }
-      else if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); openFolder(); }
-      else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); if (!noData()) quickSave(); }
-      else if (mod && e.key === ',') { e.preventDefault(); preferencesDialog(); }
+      if (mod && e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); store.undo(); return; }
+      if (mod && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) { e.preventDefault(); store.redo(); return; }
+      if (mod && e.key.toLowerCase() === 'o') { e.preventDefault(); openFolder(); return; }
+      if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); if (!noData()) quickSave(); return; }
+      if (mod && e.key === ',') { e.preventDefault(); preferencesDialog(); return; }
+      if (mod) return;   // leave other shortcuts (copy/paste, etc.) alone
+
+      // Esc: blur an editor, else clear selections / close popovers.
+      if (e.key === 'Escape') {
+        if (isTyping()) { document.activeElement.blur(); return; }
+        var had = overlaySel || hasSelection();
+        overlaySel = null; selection = {}; closeFloatingMenu(); if (typeof closePop === 'function') closePop();
+        if (had && view) { view.render(); updateStatusCounts(); }
+        return;
+      }
+      if (isTyping() || noData()) return;
+
+      // Delete/Backspace removes the selected note or point (and never lets
+      // Backspace navigate the browser back while the chart has focus).
+      if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); if (overlaySel) deleteSelectedOverlay(); return; }
+      // Arrow keys nudge the selected note/point (Shift = larger step).
+      var arrows = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+      if (arrows[e.key] && overlaySel) { e.preventDefault(); nudgeSelectedOverlay(arrows[e.key][0], arrows[e.key][1], e.shiftKey); return; }
+      // F fits all.
+      if (e.key === 'f' || e.key === 'F') { e.preventDefault(); if (view) view.fitAll(); }
     });
 
     window.addEventListener('beforeunload', function (e) {

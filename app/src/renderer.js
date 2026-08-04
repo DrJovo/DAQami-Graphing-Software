@@ -412,6 +412,9 @@
     // manual points
     (ov.manualPoints || []).forEach(function (p) {
       var px = sx.toPixel(p.x), py = sy.toPixel(p.y);
+      if (scene.selectedOverlay && scene.selectedOverlay.kind === 'point' && scene.selectedOverlay.id === p.id) {
+        rd.beginPath(); approxCircle(rd, px, py, 8); rd.strokePath({ color: T.crosshair, width: 1.6 });
+      }
       drawMarker(rd, 'circle', px, py, 4.5, { color: p.color, alpha: 1 });
       rd.beginPath(); approxCircle(rd, px, py, 4.5); rd.strokePath({ color: T.surface, width: 1.4 });
       if (p.label) labelChip(rd, p.label, px + 10 + rd.measureText(p.label, 11) / 2, py - 12, { color: p.color, bg: T.labelBg, border: T.gridMajor, align: 'center' });
@@ -429,10 +432,11 @@
       bx = Math.max(plot.x + 2, Math.min(plot.x + plot.w - bw - 2, bx));   // keep on-plot
       by = Math.max(plot.y + 2, Math.min(plot.y + plot.h - bh - 2, by));
       var bcx = bx + bw / 2, bcy = by + bh / 2;
+      var annSel = scene.selectedOverlay && scene.selectedOverlay.kind === 'annot' && scene.selectedOverlay.id === a.id;
       rd.beginPath(); rd.moveTo(ax, ay); rd.lineTo(bcx, bcy); rd.strokePath({ color: T.mutedText, width: 1, dash: [3, 3] });
-      drawMarker(rd, 'circle', ax, ay, 3, { color: T.crosshair, alpha: 1 });
-      rd.beginPath(); approxCircle(rd, ax, ay, 3); rd.strokePath({ color: T.surface, width: 1 });
-      rd.roundRect(bx, by, bw, bh, 5, { fill: T.labelBg, fillAlpha: 0.97, stroke: T.gridMajor, width: 1 });
+      drawMarker(rd, 'circle', ax, ay, annSel ? 3.6 : 3, { color: T.crosshair, alpha: 1 });
+      rd.beginPath(); approxCircle(rd, ax, ay, annSel ? 3.6 : 3); rd.strokePath({ color: T.surface, width: 1 });
+      rd.roundRect(bx, by, bw, bh, 5, { fill: T.labelBg, fillAlpha: 0.97, stroke: annSel ? T.crosshair : T.gridMajor, width: annSel ? 1.6 : 1 });
       lines.forEach(function (L, i) { rd.text(L, bcx, by + padY + i * lineH + lineH / 2, { color: T.text, size: size, align: 'center', baseline: 'middle' }); });
       annotationBoxes.push({ id: a.id, x: bx, y: by, w: bw, h: bh, ax: ax, ay: ay });
     });
@@ -476,8 +480,9 @@
       rd.text(scene.title, plot.x + plot.w / 2, 20, { color: T.text, size: 14, weight: '700', align: 'center', baseline: 'middle' });
       var tw = rd.measureText(scene.title, 14, UI_FONT);
       var cx = plot.x + plot.w / 2;
-      // Cover the title, plus a little room on the right for the hover pencil.
-      titleBox = { x: cx - tw / 2 - 8, y: 6, w: tw + 16 + 18, h: 26 };  // clickable rename region (CSS px)
+      // Cover the title with balanced padding on both sides; the right padding also
+      // holds the hover pencil.
+      titleBox = { x: cx - tw / 2 - 16, y: 6, w: tw + 36, h: 26 };  // clickable rename region (CSS px)
     }
 
     // ---- legend (draggable, snaps to a corner) ----
