@@ -194,6 +194,32 @@
     return hslToHex(hue, sat, light);
   }
 
+  // Hue identities of the curated palette (variant-independent), ordered for
+  // maximum adjacent distinctness — the professional, readable sequence used for
+  // grouping colors by trial / by sensor.
+  var BASE_HUES = MUTED.light.map(function (h) { return Math.round(hexToHsl(h).h); });
+  /* spreadHues(n): n distinct, professional, well-separated hues. Uses the curated
+   * order first (so small groups get the hand-tuned distinct hues, never a muddy
+   * red/yellow/green run), then the golden angle for larger groups. */
+  function spreadHues(n) {
+    n = Math.max(1, n | 0);
+    if (n <= BASE_HUES.length) return BASE_HUES.slice(0, n);
+    var out = BASE_HUES.slice();
+    for (var i = BASE_HUES.length; i < n; i++) out.push(Math.round((210 + i * 137.508) % 360));
+    return out;
+  }
+  /* randomHues(n): "organized randomness" — a random starting hue swept by the
+   * golden angle (so the set stays maximally spread and readable), then shuffled
+   * so which item gets which hue varies. Saturation/lightness come from shade(),
+   * so results are always professional, never neon or clashing. */
+  function randomHues(n) {
+    n = Math.max(1, n | 0);
+    var start = Math.random() * 360, hues = [];
+    for (var i = 0; i < n; i++) hues.push((start + i * 137.508) % 360);
+    for (var j = hues.length - 1; j > 0; j--) { var k = Math.floor(Math.random() * (j + 1)); var t = hues[j]; hues[j] = hues[k]; hues[k] = t; }
+    return hues;
+  }
+
   function applyTheme(name) {
     var vars = THEMES[name] || THEMES.light;
     var root = document.documentElement;
@@ -207,6 +233,8 @@
     seriesColor: seriesColor,
     scale: scale,
     shade: shade,
+    spreadHues: spreadHues,
+    randomHues: randomHues,
     hslToHex: hslToHex,
     hexToHsl: hexToHsl,
     setVariant: function (v) { variant = (v === 'vibrant') ? 'vibrant' : 'muted'; },

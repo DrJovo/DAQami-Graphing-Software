@@ -480,9 +480,9 @@
       rd.text(scene.title, plot.x + plot.w / 2, 20, { color: T.text, size: 14, weight: '700', align: 'center', baseline: 'middle' });
       var tw = rd.measureText(scene.title, 14, UI_FONT);
       var cx = plot.x + plot.w / 2;
-      // Cover the title with balanced padding on both sides; the right padding also
-      // holds the hover pencil.
-      titleBox = { x: cx - tw / 2 - 16, y: 6, w: tw + 36, h: 26 };  // clickable rename region (CSS px)
+      // 16px left padding; extra room on the right so the hover pencil sits clear
+      // of the title text with breathing space at the edge.
+      titleBox = { x: cx - tw / 2 - 16, y: 6, w: tw + 16 + 32, h: 26 };  // clickable rename region (CSS px)
     }
 
     // ---- legend (draggable, snaps to a corner) ----

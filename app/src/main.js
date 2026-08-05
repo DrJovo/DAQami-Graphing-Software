@@ -485,10 +485,8 @@
       pop.appendChild(grid);
 
       pop.appendChild(el('div', { class: 'pop-cap', text: 'Separate what’s shown' }));
-      pop.appendChild(el('button', { class: 'btn sm block', html: Icons.palette + ' Recolor visible', title: 'Give every currently-visible dataset a distinct, well-separated color. Hidden data is left alone; anything you unhide or add later keeps its color until you press this again.', onclick: recolorVisible }));
-
-      pop.appendChild(el('div', { class: 'pop-sep' }));
-      pop.appendChild(el('button', { class: 'btn sm block ghost', html: Icons.undo + ' Reset to automatic', title: 'Clear all color overrides and return to the automatic distinct palette.', onclick: recolorAutomatic }));
+      pop.appendChild(el('button', { class: 'btn sm block', html: Icons.palette + ' Recolor visible', title: 'Give every currently-visible dataset a distinct, well-separated color.', onclick: recolorVisible }));
+      pop.appendChild(el('button', { class: 'btn sm block', style: 'margin-top:6px', html: Icons.shuffle + ' Randomize', title: 'A fresh, well-spread set of professional colors for the visible datasets. Press again for another.', onclick: randomizeColors }));
     });
   }
 
@@ -505,9 +503,7 @@
 
       pop.appendChild(el('div', { class: 'pop-cap', text: 'Separate what’s shown' }));
       pop.appendChild(el('button', { class: 'btn sm block', html: Icons.palette + ' Recolor items', title: 'Give every item in this overlay a distinct, well-separated color.', onclick: recolorCustomItems }));
-
-      pop.appendChild(el('div', { class: 'pop-sep' }));
-      pop.appendChild(el('button', { class: 'btn sm block ghost', html: Icons.undo + ' Reset to automatic', title: 'Clear the color overrides for this overlay.', onclick: resetCustomColors }));
+      pop.appendChild(el('button', { class: 'btn sm block', style: 'margin-top:6px', html: Icons.shuffle + ' Randomize', title: 'A fresh, well-spread set of professional colors for this overlay. Press again for another.', onclick: randomizeCustomItems }));
     });
   }
   function bindDrag(elm, onMove) {
@@ -652,63 +648,80 @@
    * survives new data being added/unhidden until re-applied, AND still follows the
    * muted/vibrant palette switch. Applying an arrangement clears any hand-set color
    * (the arrangement buttons override manual choices; only the palette switch
-   * leaves manual colors alone). ------------------------------------------------ */
+   * leaves manual colors alone). The chosen mode is remembered so it re-applies
+   * automatically when data is added or removed. --------------------------------- */
 
-  // Reset to the automatic distinct colors (clears manual + arranged overrides).
-  function recolorAutomatic() {
-    Object.keys(store.state.datasetStyles).forEach(function (id) {
-      var st = store.state.datasetStyles[id];
-      if (st.customColor || st.arrange) store.setDatasetStyle(id, { customColor: null, arrange: null });
-    });
-    store.commit('recolor-auto');
-    toast('Reset to automatic colors');
-  }
-
-  // Spread the palette across only the currently-visible datasets so a crowded
-  // graph's active traces are maximally separated. Hidden datasets are untouched,
-  // and anything unhidden/added later keeps its color until this is run again.
-  function recolorVisible() {
-    var ids = store.currentDatasetIds().filter(function (id) { return store.style(id).visibility !== 'off'; });
-    if (!ids.length) { toast('No visible datasets to recolor'); return; }
-    ids.forEach(function (id, i) { store.setDatasetStyle(id, { customColor: null, arrange: { type: 'slot', slot: i, total: ids.length } }); });
-    store.commit('recolor-visible');
-    toast('Recolored ' + ids.length + ' visible dataset' + (ids.length === 1 ? '' : 's'));
-  }
-
-  // Group by trial: each trial-run gets its own hue, each sensor a deeper shade of
-  // it (AI0 brightest). Ties every sensor of a trial together visually.
-  function recolorByTrial() {
-    var pairs = [];
-    store.data.experiments.forEach(function (exp) { exp.trials.forEach(function (tr) { pairs.push({ exp: exp, tr: tr }); }); });
-    var T = pairs.length || 1;
-    pairs.forEach(function (pr, ti) {
-      var hue = (ti * 360 / T) % 360, chans = pr.exp.channelNames, S = chans.length;
-      pr.tr.channels.forEach(function (ch) {
-        var s = chans.indexOf(ch.name); if (s < 0) s = 0;
-        store.setDatasetStyle(DataModel.datasetId(pr.exp.number, pr.tr.trial, ch.name), { customColor: null, arrange: { type: 'hue', hue: hue, frac: S > 1 ? s / (S - 1) : 0 } });
+  // ---- assignment cores (no commit / toast) ----
+  // Group by trial: within EACH experiment, its trials get distinct, professional,
+  // well-separated hues (from the curated palette, so no muddy red/yellow/green
+  // run), and each sensor is a deeper shade of its trial's hue (AI0 brightest).
+  function assignByTrial() {
+    store.data.experiments.forEach(function (exp) {
+      var trials = DataModel.trialNumbers(exp), hues = Theme.spreadHues(trials.length);
+      var chans = exp.channelNames, S = chans.length;
+      exp.trials.forEach(function (tr) {
+        var ti = trials.indexOf(tr.trial); if (ti < 0) ti = 0;
+        var hue = hues[ti % hues.length];
+        tr.channels.forEach(function (ch) {
+          var s = chans.indexOf(ch.name); if (s < 0) s = 0;
+          store.setDatasetStyle(DataModel.datasetId(exp.number, tr.trial, ch.name), { customColor: null, arrange: { type: 'hue', hue: hue, frac: S > 1 ? s / (S - 1) : 0 } });
+        });
       });
     });
-    store.commit('recolor-trial');
-    toast('Grouped by trial');
   }
-
-  // Group by sensor: each sensor gets its own hue, each trial a deeper shade of it
-  // (first trial brightest). Ties the same sensor across trials together visually.
-  function recolorBySensor() {
-    var sensors = allSensorNames(), S = sensors.length || 1;
+  // Group by sensor: within each experiment, each sensor gets a distinct hue, each
+  // trial a deeper shade of it (first trial brightest).
+  function assignBySensor() {
     store.data.experiments.forEach(function (exp) {
+      var chans = exp.channelNames, hues = Theme.spreadHues(chans.length);
       var trials = DataModel.trialNumbers(exp), Tn = trials.length;
       exp.trials.forEach(function (tr) {
         var ti = trials.indexOf(tr.trial); if (ti < 0) ti = 0;
         tr.channels.forEach(function (ch) {
-          var si = sensors.indexOf(ch.name); if (si < 0) si = 0;
-          var hue = (si * 360 / S) % 360;
-          store.setDatasetStyle(DataModel.datasetId(exp.number, tr.trial, ch.name), { customColor: null, arrange: { type: 'hue', hue: hue, frac: Tn > 1 ? ti / (Tn - 1) : 0 } });
+          var si = chans.indexOf(ch.name); if (si < 0) si = 0;
+          store.setDatasetStyle(DataModel.datasetId(exp.number, tr.trial, ch.name), { customColor: null, arrange: { type: 'hue', hue: hues[si % hues.length], frac: Tn > 1 ? ti / (Tn - 1) : 0 } });
         });
       });
     });
-    store.commit('recolor-sensor');
-    toast('Grouped by sensor');
+  }
+  // Spread distinct colors across only the currently-visible datasets of this graph.
+  function assignRecolorVisible() {
+    var ids = store.currentDatasetIds().filter(function (id) { return store.style(id).visibility !== 'off'; });
+    ids.forEach(function (id, i) { store.setDatasetStyle(id, { customColor: null, arrange: { type: 'slot', slot: i, total: ids.length } }); });
+    return ids.length;
+  }
+  // Organized-random distinct colors for the visible datasets.
+  function assignRandomize() {
+    var ids = store.currentDatasetIds().filter(function (id) { return store.style(id).visibility !== 'off'; });
+    var hues = Theme.randomHues(ids.length);
+    ids.forEach(function (id, i) { store.setDatasetStyle(id, { customColor: null, arrange: { type: 'hue', hue: hues[i], frac: (i % 3) * 0.18 } }); });
+    return ids.length;
+  }
+
+  // ---- button wrappers (set the remembered mode, commit, toast) ----
+  function recolorByTrial() { assignByTrial(); store.state.colorMode = 'byTrial'; store.commit('recolor-trial'); toast('Grouped by trial'); }
+  function recolorBySensor() { assignBySensor(); store.state.colorMode = 'bySensor'; store.commit('recolor-sensor'); toast('Grouped by sensor'); }
+  function recolorVisible() {
+    var n = assignRecolorVisible();
+    if (!n) { toast('No visible datasets to recolor'); return; }
+    store.state.colorMode = 'visible'; store.commit('recolor-visible');
+    toast('Recolored ' + n + ' visible dataset' + (n === 1 ? '' : 's'));
+  }
+  function randomizeColors() {
+    var n = assignRandomize();
+    if (!n) { toast('No visible datasets to recolor'); return; }
+    store.state.colorMode = 'random'; store.commit('recolor-random');
+    toast('Randomized ' + n + ' color' + (n === 1 ? '' : 's'));
+  }
+  // Re-apply the remembered arrangement (used after data is added/removed).
+  function reapplyColorMode() {
+    var m = store.state.colorMode;
+    if (m === 'byTrial') assignByTrial();
+    else if (m === 'bySensor') assignBySensor();
+    else if (m === 'visible') assignRecolorVisible();
+    else if (m === 'random') assignRandomize();
+    else return false;
+    return true;
   }
 
   /* Smoothing is expensive and graphSeries() runs several times per render, so
@@ -816,6 +829,7 @@
     if (ov) {
       if (ov.type === 'manual') return ov.hex;
       if (ov.type === 'slot') { var ps = Theme.scale(store.state.theme, Math.max(1, ov.total)); return ps[((ov.slot % ps.length) + ps.length) % ps.length]; }
+      if (ov.type === 'hue') return Theme.shade(store.state.theme, ov.hue, ov.frac || 0);
     }
     var p = key.split('|');
     if (p[0] === 'R') return store.resolveColor(DataModel.datasetId(+p[1].slice(1), +p[2].slice(1), p[3]));
@@ -832,7 +846,14 @@
     store.commit('custom-recolor');
     toast('Recolored ' + sel.length + ' item' + (sel.length === 1 ? '' : 's'));
   }
-  function resetCustomColors() { customState().colors = {}; store.commit('custom-recolor-reset'); toast('Reset to automatic colors'); }
+  function randomizeCustomItems() {
+    var sel = customState().selected;
+    if (!sel.length) { toast('Nothing to recolor'); return; }
+    var hues = Theme.randomHues(sel.length);
+    sel.forEach(function (key, i) { customState().colors[key] = { type: 'hue', hue: hues[i], frac: (i % 3) * 0.18 }; });
+    store.commit('custom-random');
+    toast('Randomized ' + sel.length + ' color' + (sel.length === 1 ? '' : 's'));
+  }
   function customSeries() {
     var out = [];
     customState().selected.forEach(function (key) {
@@ -2202,46 +2223,98 @@
   function kv(card, k, v) { card.appendChild(el('div', { class: 'kv', html: '<span class="k">' + k + '</span><span class="v">' + v + '</span>' })); }
 
   /* ============================ FOLDER / FILES ========================= */
-  var pendingFolderUpdate = false;
-  function openFolder() { pendingFolderUpdate = false; els.folderInput.value = ''; els.folderInput.click(); }
-  // Re-pick the same folder and merge changes into the current workspace.
-  function updateFolder() { if (noData()) return; pendingFolderUpdate = true; els.folderInput.value = ''; els.folderInput.click(); }
+  var lastDirHandle = null;        // File System Access directory handle (for silent refresh)
+  var pendingFolderUpdate = false; // fallback (webkitdirectory) update mode
+
+  function openFolder() {
+    if (window.showDirectoryPicker) {
+      window.showDirectoryPicker().then(function (h) { lastDirHandle = h; loadFromDirHandle(h, false); })
+        .catch(function (e) { if (e && e.name === 'AbortError') return; pendingFolderUpdate = false; els.folderInput.value = ''; els.folderInput.click(); });
+    } else { pendingFolderUpdate = false; els.folderInput.value = ''; els.folderInput.click(); }
+  }
+  // Reload the current folder with no prompt (via the stored directory handle);
+  // falls back to a re-pick only if the folder wasn't opened through the handle API.
+  function updateFolder() {
+    if (noData()) return;
+    if (lastDirHandle) {
+      ensureReadPermission(lastDirHandle).then(function (ok) {
+        if (ok) loadFromDirHandle(lastDirHandle, true);
+        else toast('Couldn’t re-read the folder — permission was denied');
+      });
+    } else { pendingFolderUpdate = true; els.folderInput.value = ''; els.folderInput.click(); }
+  }
+  function ensureReadPermission(handle) {
+    if (!handle.queryPermission) return Promise.resolve(true);
+    return handle.queryPermission({ mode: 'read' }).then(function (p) {
+      if (p === 'granted') return true;
+      return handle.requestPermission({ mode: 'read' }).then(function (p2) { return p2 === 'granted'; });
+    }).catch(function () { return true; });
+  }
+  // Recursively read every .csv file's text out of a directory handle.
+  function readDirCsv(dirHandle) {
+    var files = [];
+    function walk(handle) {
+      var it = handle.values();
+      function step() {
+        return it.next().then(function (res) {
+          if (res.done) return;
+          var entry = res.value;
+          if (entry.kind === 'file' && /\.csv$/i.test(entry.name)) {
+            return entry.getFile().then(function (f) { return f.text(); }).then(function (txt) { files.push({ name: entry.name, text: txt }); return step(); });
+          }
+          if (entry.kind === 'directory') return walk(entry).then(step);
+          return step();
+        });
+      }
+      return step();
+    }
+    return walk(dirHandle).then(function () { return files; });
+  }
+  function loadFromDirHandle(handle, isUpdate) {
+    readDirCsv(handle).then(function (entries) { processEntries(entries, handle.name || 'data', isUpdate); })
+      .catch(function () { toast('Could not read that folder'); });
+  }
   function onFolderPicked(e) {
     var isUpdate = pendingFolderUpdate; pendingFolderUpdate = false;
     var files = Array.prototype.slice.call(e.target.files).filter(function (f) { return /\.csv$/i.test(f.name); });
     if (!files.length) { toast('No .csv files found in that folder'); return; }
     var folderName = files[0].webkitRelativePath ? files[0].webkitRelativePath.split('/')[0] : 'data';
+    Promise.all(files.map(function (f) { return f.text().then(function (txt) { return { name: f.name, text: txt }; }); }))
+      .then(function (entries) { processEntries(entries, folderName, isUpdate); });
+  }
+  // Parse already-read {name,text} entries and load or merge them into the store.
+  function processEntries(entries, folderName, isUpdate) {
     var fp = store.state.filenamePattern || { mode: 'auto' };
     var rx = fp.mode === 'template' ? Parser.buildFilenameRegex(fp.template) : null;
-    Promise.all(files.map(function (f) { return f.text().then(function (txt) { return Parser.parseDaqamiCsv(txt, f.name, { filenameRegex: rx }); }); }))
-      .then(function (parsed) {
-        var ok = parsed.filter(function (p) { return !p.error && p.experiment != null; });
-        var skipped = parsed.filter(function (p) { return p.error || p.experiment == null; }).map(function (p) {
-          return { name: p.filename, reason: p.error ? 'Not a readable DAQami CSV' : 'Name doesn’t match the experiment/trial pattern' };
-        });
-        if (ok.length) {
-          clearCaches();
-          if (isUpdate) {
-            var diff = store.updateData(parsed, folderName);
-            if (view) view.setAutoDirty();
-            var parts = [];
-            if (diff.added) parts.push('+' + diff.added + ' new');
-            if (diff.removed) parts.push('−' + diff.removed + ' removed');
-            toast('Folder updated' + (parts.length ? ' · ' + parts.join(', ') : ' · no changes') + ' · analysis kept');
-          } else {
-            store.setData(parsed, folderName);
-            els.chartEmpty.style.display = 'none';
-            if (view) { view.setAutoDirty(); view.fitAll(); }
-            var warned = ok.filter(function (p) { return p.warnings && p.warnings.length; }).length;
-            if (!skipped.length) {
-              toast('Loaded ' + ok.length + ' trials across ' + store.data.experiments.length + ' experiment' + (store.data.experiments.length > 1 ? 's' : '') +
-                (warned ? ' · ' + warned + ' with data warnings (see Details)' : ''));
-            }
-            offerAutosaveRestore(folderName);   // recover unsaved analysis from a prior session
-          }
+    var parsed = entries.map(function (en) { return Parser.parseDaqamiCsv(en.text, en.name, { filenameRegex: rx }); });
+    var ok = parsed.filter(function (p) { return !p.error && p.experiment != null; });
+    var skipped = parsed.filter(function (p) { return p.error || p.experiment == null; }).map(function (p) {
+      return { name: p.filename, reason: p.error ? 'Not a readable DAQami CSV' : 'Name doesn’t match the experiment/trial pattern' };
+    });
+    if (ok.length) {
+      clearCaches();
+      if (isUpdate) {
+        var diff = store.updateData(parsed, folderName);
+        reapplyColorMode();                 // recompute colors under the last arrangement
+        store.commit('reload-folder');
+        if (view) view.setAutoDirty();
+        var parts = [];
+        if (diff.added) parts.push('+' + diff.added + ' new');
+        if (diff.removed) parts.push('−' + diff.removed + ' removed');
+        toast('Folder reloaded' + (parts.length ? ' · ' + parts.join(', ') : ' · no changes') + ' · analysis kept');
+      } else {
+        store.setData(parsed, folderName);
+        els.chartEmpty.style.display = 'none';
+        if (view) { view.setAutoDirty(); view.fitAll(); }
+        var warned = ok.filter(function (p) { return p.warnings && p.warnings.length; }).length;
+        if (!skipped.length) {
+          toast('Loaded ' + ok.length + ' trials across ' + store.data.experiments.length + ' experiment' + (store.data.experiments.length > 1 ? 's' : '') +
+            (warned ? ' · ' + warned + ' with data warnings (see Details)' : ''));
         }
-        if (skipped.length) unmatchedDialog(skipped, ok.length);
-      });
+        offerAutosaveRestore(folderName);   // recover unsaved analysis from a prior session
+      }
+    }
+    if (skipped.length) unmatchedDialog(skipped, ok.length);
   }
 
   function unmatchedDialog(skipped, loadedCount) {

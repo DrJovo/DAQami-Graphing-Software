@@ -27,6 +27,7 @@
     expfit: svg('<path d="M4 4v16h16" /><path d="M4 18C10 18 8 6 20 6" />'),
     note: svg('<path d="M5 4h14a1 1 0 0 1 1 1v10l-5 5H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M20 15h-4a1 1 0 0 0-1 1v4"/><path d="M8 9h8M8 13h4"/>'),
     refresh: svg('<path d="M20 11a8 8 0 1 0-.6 4"/><path d="M20 4v6h-6"/>'),
+    shuffle: svg('<path d="M3 6h4l10 12h4M3 18h4l3.5-4.2M14.5 8.2 17 6h4"/><path d="M18 3l3 3-3 3M18 15l3 3-3 3"/>'),
     zoomX: svg('<circle cx="10" cy="10" r="6.4"/><path d="M20.5 20.5l-5.6-5.6"/><path d="M7.3 10h5.4M8.9 8.4 7.3 10l1.6 1.6M11.1 8.4 12.7 10l-1.6 1.6"/>'),
     zoomY: svg('<circle cx="10" cy="10" r="6.4"/><path d="M20.5 20.5l-5.6-5.6"/><path d="M10 7.3v5.4M8.4 8.9 10 7.3l1.6 1.6M8.4 11.1 10 12.7l1.6-1.6"/>'),
     panelLeft: svg('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>'),

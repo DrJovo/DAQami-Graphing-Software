@@ -436,7 +436,7 @@ table.data-table tr:hover td.idx, table.data-table tr:hover td.time { background
 
 /* On-chart title: transparent hit-area over the renderer-drawn title, so the
  * title shown on the graph (and in exports) is itself clickable to rename. */
-.chart-title-hit { position: absolute; display: flex; align-items: center; justify-content: flex-end; padding-right: 4px;
+.chart-title-hit { position: absolute; display: flex; align-items: center; justify-content: flex-end; padding-right: 9px;
   cursor: text; border-radius: var(--r-sm); box-shadow: inset 0 0 0 1px transparent; transition: box-shadow .12s, background .12s; z-index: 4; }
 .chart-title-hit:hover { background: color-mix(in srgb, var(--surface) 62%, transparent); box-shadow: inset 0 0 0 1px var(--border-2); }
 .chart-title-pencil { width: 13px; height: 13px; color: var(--text-3); opacity: 0; transition: opacity .12s; }

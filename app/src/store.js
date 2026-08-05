@@ -57,6 +57,7 @@
         showGrid: { major: true, minor: false },
         legend: true,
         legendCorner: 'tr',      // 'tl' | 'tr' | 'bl' | 'br'
+        colorMode: 'auto',       // last color arrangement: auto|byTrial|bySensor|visible|random
         markerSize: 3,
         lineWidth: 1.8,
         datasetStyles: {},
@@ -77,7 +78,7 @@
       return clone({
         theme: s.theme, currentExperiment: s.currentExperiment, graphMode: s.graphMode,
         modeSelector: s.modeSelector, plotType: s.plotType, showGrid: s.showGrid, legend: s.legend,
-        legendCorner: s.legendCorner,
+        legendCorner: s.legendCorner, colorMode: s.colorMode,
         markerSize: s.markerSize, lineWidth: s.lineWidth, datasetStyles: s.datasetStyles,
         trialOffsets: s.trialOffsets, graphs: s.graphs, custom: s.custom,
       });
@@ -88,6 +89,7 @@
       s.theme = d.theme; s.currentExperiment = d.currentExperiment; s.graphMode = d.graphMode;
       s.modeSelector = d.modeSelector; s.plotType = d.plotType; s.showGrid = d.showGrid; s.legend = d.legend;
       if (d.legendCorner) s.legendCorner = d.legendCorner;
+      if (d.colorMode) s.colorMode = d.colorMode;
       s.markerSize = d.markerSize; s.lineWidth = d.lineWidth; s.datasetStyles = d.datasetStyles;
       s.trialOffsets = d.trialOffsets; s.graphs = d.graphs;
       if (d.custom) s.custom = d.custom;
@@ -156,7 +158,7 @@
       if (!DM.findExperiment(experiments, this.state.currentExperiment) && experiments.length)
         this.state.currentExperiment = experiments[0].number;
       this._ensureSelectors();
-      this.commit('update-data');
+      // Caller commits (so a color re-apply can be folded into the same undo step).
       return { added: added, removed: removed };
     },
 
@@ -242,6 +244,7 @@
     migrateWorkspace: function (ws) {
       if (!ws || typeof ws !== 'object') return ws;
       if (ws.legendCorner == null) ws.legendCorner = 'tr';
+      if (ws.colorMode == null) ws.colorMode = 'auto';
       var graphs = ws.graphs || {};
       for (var k in graphs) if (graphs.hasOwnProperty(k)) graphs[k] = migrateGraph(graphs[k]);
       return ws;
