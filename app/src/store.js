@@ -197,7 +197,7 @@
     /* ---- styles ---- */
     style: function (id) {
       var st = this.state.datasetStyles[id];
-      if (!st) { st = { colorIndex: 0, customColor: null, arrange: null, shape: 'circle', visibility: 'on' }; this.state.datasetStyles[id] = st; }
+      if (!st) { st = { colorIndex: 0, customColor: null, arrange: null, shape: 'circle', lineStyle: 'solid', visibility: 'on' }; this.state.datasetStyles[id] = st; }
       return st;
     },
     /* Colour precedence:

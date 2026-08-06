@@ -81,6 +81,7 @@
             customColor: null,  // hand-set color (fixed); null = follow arrange/auto
             arrange: null,      // Color Manager assignment: {type:'hue',hue,frac} | {type:'slot',slot,total}
             shape: SHAPES[i % SHAPES.length],
+            lineStyle: 'solid', // 'solid' | 'dashed' | 'dotted'
             visibility: 'on', // 'on' | 'dim' | 'off'
             unit: ch.unit,
           };

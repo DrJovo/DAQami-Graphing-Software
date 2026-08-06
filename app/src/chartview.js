@@ -227,10 +227,10 @@
         this._drag = { type: 'annot', id: ann.id, ax: L.sx.toPixel(a.x), ay: L.sy.toPixel(a.y) };
         this.canvas.style.cursor = 'grabbing'; return;
       }
-      // drag the legend
+      // drag the legend (or Ctrl-click an entry to multi-select)
       var lb = this._hitLegend(p);
       if (lb) {
-        this._drag = { type: 'legend', offX: p.x - lb.x, offY: p.y - lb.y };
+        this._drag = { type: 'legend', offX: p.x - lb.x, offY: p.y - lb.y, ctrl: e.ctrlKey || e.metaKey };
         this._legendDrag = { x: lb.x, y: lb.y }; this.canvas.style.cursor = 'grabbing'; return;
       }
       // hit-test manual points for dragging
@@ -267,6 +267,11 @@
     _hitLegend: function (p) {
       var b = this._layout && this._layout.legendBox;
       if (b && p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h) return b;
+      return null;
+    },
+    _hitLegendItem: function (p) {
+      var boxes = this._layout && this._layout.legendItemBoxes; if (!boxes) return null;
+      for (var i = 0; i < boxes.length; i++) { var b = boxes[i]; if (p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h) return b.id; }
       return null;
     },
     _onMove: function (e) {
@@ -324,16 +329,23 @@
     },
     _onUp: function () {
       if (this._drag) {
-        var type = this._drag.type, id = this._drag.id, moved = this._dragMoved;
+        var type = this._drag.type, id = this._drag.id, moved = this._dragMoved, lctrl = this._drag.ctrl;
         this._drag = null;
         this.canvas.style.cursor = 'crosshair';
         if (type === 'point') { if (moved && this.opts.onManualPointDrop) this.opts.onManualPointDrop(); else if (this.opts.onOverlayClick) this.opts.onOverlayClick('point', id); }
         else if (type === 'annot' || type === 'anchor') { if (moved && this.opts.onAnnotationDrop) this.opts.onAnnotationDrop(); else if (this.opts.onOverlayClick) this.opts.onOverlayClick('annot', id); }
         else if (type === 'legend') {
-          var corner = (this._legendDrag && this._legendDrag.snapCorner) || 'tr';
-          this._legendDrag = null;
-          if (this.opts.onLegendMove) this.opts.onLegendMove(corner);
-          this.render();
+          if (moved) {   // a drag -> snap to the nearest corner
+            var corner = (this._legendDrag && this._legendDrag.snapCorner) || 'tr';
+            this._legendDrag = null;
+            if (this.opts.onLegendMove) this.opts.onLegendMove(corner);
+            this.render();
+          } else {       // a click on an entry -> isolate (or Ctrl-click to multi-select)
+            this._legendDrag = null;
+            var lid = this._hitLegendItem(this._dragStart);
+            if (lid != null && this.opts.onLegendItemClick) this.opts.onLegendItemClick(lid, { ctrl: lctrl });
+            else this.render();
+          }
         } else if (this.opts.onViewChange) this.opts.onViewChange();
       }
       if (this._down && !this._down.moved && this.opts.onSeriesClick) {

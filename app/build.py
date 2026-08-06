@@ -5,6 +5,7 @@ Reads app/index.html, replaces the <link> and <script src> references with the
 file contents inlined, and writes ../ThermoScope.html — a single file you can
 double-click or email that runs offline with no install.
 """
+import datetime
 import os
 import re
 
@@ -40,9 +41,14 @@ def main():
 
     html = re.sub(r'<script src="([^"]+)"></script>', js_repl, html)
 
+    # Stamp the build date into the inlined source (main.js carries a @@BUILD_DATE@@
+    # token, shown in the About dialog). Must run after the JS is inlined.
+    build_date = datetime.date.today().isoformat()
+    html = html.replace('@@BUILD_DATE@@', build_date)
+
     with open(OUT, 'w', encoding='utf-8') as f:
         f.write(html)
-    print('Wrote', OUT, '(%d KB)' % (os.path.getsize(OUT) // 1024))
+    print('Wrote', OUT, '(%d KB)' % (os.path.getsize(OUT) // 1024), '- v build', build_date)
 
 
 if __name__ == '__main__':

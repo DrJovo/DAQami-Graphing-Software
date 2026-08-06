@@ -1,11 +1,47 @@
 /* =============================================================================
  * main.js — Boots ThermoScope and wires the UI to every module. This is the
- * only file that touches the DOM.
+ * only file that touches the DOM; every other module is pure logic.
+ *
+ * WHERE THIS SITS. All modules attach to the global `window.TS` namespace and
+ * load in dependency order (see index.html / build.py):
+ *
+ *     theme → parser → datamodel → analysis → organizer → renderer
+ *           → chartview → store → icons → main   (this file, last)
+ *
+ * DATA PIPELINE. A folder of CSVs flows one way through the modules:
+ *
+ *     files ──Parser──▶ parsed trials ──DataModel──▶ experiments/datasets
+ *           ──Store──▶ workspace state ──buildScene()──▶ scene object
+ *           ──Renderer──▶ pixels (canvas on screen, SVG/PNG on export)
+ *
+ * KEY STATE (declared just below):
+ *   • store   — the single source of truth (data + per-graph analysis + undo).
+ *   • view    — the one live ChartView (owns pan/zoom and pointer interaction).
+ *   • els     — cached DOM handles, populated in boot().
+ *   • selection / overlaySel — transient chart selection (never saved to a session).
+ *   • viewByGraph — remembered zoom/pan per graph, so switching graphs is lossless.
+ *
+ * RENDER FLOW. UI mutations call store methods, then updateAll() repaints the
+ * chrome (menus/panels/status) while the ChartView repaints the plot by calling
+ * buildScene() — the single function that turns current state into the scene the
+ * Renderer draws. Screen and export share that exact scene, so exports match 1:1.
  * ============================================================================= */
 (function (TS) {
   'use strict';
   var Parser = TS.Parser, DataModel = TS.DataModel, Analysis = TS.Analysis,
       Organizer = TS.Organizer, Renderer = TS.Renderer, Theme = TS.Theme, Icons = TS.Icons;
+
+  /* Release identity. APP_VERSION is the public release number. BUILD_DATE holds a
+   * token that build.py stamps with the build date when it generates the single
+   * ThermoScope.html; when running the un-inlined dev shell the token is left as-is
+   * and reported as a development build. (This is the app release version, distinct
+   * from the session FORMAT_VERSION in store.js.) */
+  var APP_VERSION = '1.0';
+  var BUILD_DATE = '@@BUILD_DATE@@';
+  function buildInfo() {
+    return { version: APP_VERSION, date: BUILD_DATE.indexOf('@@') < 0 ? BUILD_DATE : null };
+  }
+  TS.version = APP_VERSION;
 
   var store = new TS.Store();
   var view = null;             // ChartView
@@ -27,6 +63,23 @@
     else { selection = {}; if (id) selection[id] = true; }
     selectionKey = store.graphKey();
     overlaySel = null;   // a series/empty click clears any overlay selection
+    if (view) view.render();
+    updateStatusCounts();
+  }
+  /* Click a legend entry to isolate that series (dim the rest); click again to
+   * restore. Ctrl-click adds/removes an entry from a multi-selection instead of
+   * isolating. Reuses the selection/dim machinery. */
+  function onLegendItemClick(id, mods) {
+    if (mods && mods.ctrl) {   // toggle this one in/out of the current selection
+      overlaySel = null;
+      if (selectionKey !== store.graphKey()) { selection = {}; selectionKey = store.graphKey(); }
+      if (selection[id]) delete selection[id]; else selection[id] = true;
+    } else {                   // isolate this one (or restore if it was the only one)
+      var only = hasSelection() && Object.keys(selection).length === 1 && selection[id];
+      selection = {}; overlaySel = null;
+      if (!only) selection[id] = true;
+      selectionKey = store.graphKey();
+    }
     if (view) view.render();
     updateStatusCounts();
   }
@@ -131,7 +184,7 @@
 
   /* ---- app-level preferences (persisted on this computer, separate from the
    * workspace/undo/session) ---- */
-  var PREF_DEFAULTS = { accent: 'blue', density: 'comfortable', tempUnit: 'source', exportUnit: 'source', decimals: 3, confirmClose: true, timeCap: null, palette: 'muted' };
+  var PREF_DEFAULTS = { accent: 'blue', density: 'comfortable', tempUnit: 'source', exportUnit: 'source', decimals: 3, confirmClose: true, timeCap: null, palette: 'muted', snapToData: false };
   var Prefs = {
     data: Object.assign({}, PREF_DEFAULTS),
     load: function () { try { var s = localStorage.getItem('thermoscope.prefs'); if (s) Object.assign(this.data, JSON.parse(s)); } catch (e) {} },
@@ -241,6 +294,7 @@
   }
   function fmt(n, dp) { if (n == null || isNaN(n)) return '–'; return Number(n).toFixed(dp == null ? 3 : dp); }
   function clearNode(n) { while (n.firstChild) n.removeChild(n.firstChild); }
+  function escapeHtml(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
 
   var toastTimer;
   function toast(msg, action) {
@@ -346,8 +400,9 @@
   }
 
   var openColorPop = null;
-  function openColorPicker(anchor, current, cb) {
+  function openColorPicker(anchor, current, cb, opts) {
     closeColorPop();
+    opts = opts || {};
     var rgb = hexToRgb(current) || { r: 57, g: 135, b: 229 };
     var hsv = rgbToHsv(rgb.r, rgb.g, rgb.b);
     var startHex = rgbToHex(rgb.r, rgb.g, rgb.b);
@@ -377,6 +432,22 @@
     pop.appendChild(el('div', { class: 'cp-fields' }, [
       el('div', { class: 'cp-cap', text: 'R' }), rIn, el('div', { class: 'cp-cap', text: 'G' }), gIn, el('div', { class: 'cp-cap', text: 'B' }), bIn,
     ]));
+    // optional line-style control (per-dataset solid / dashed / dotted)
+    if (opts.lineStyle) {
+      var ls = opts.lineStyle;
+      pop.appendChild(el('div', { class: 'cp-cap', style: 'margin-top:10px; width:auto; text-align:left; white-space:nowrap', text: 'Line style' }));
+      var seg = el('div', { class: 'cp-linestyle' });
+      [['solid', 'Solid'], ['dashed', 'Dashed'], ['dotted', 'Dotted']].forEach(function (o) {
+        var b = el('button', { class: 'cp-ls' + (ls.get() === o[0] ? ' on' : ''), title: o[1] }, [el('span', { class: 'cp-ls-line ' + o[0] })]);
+        b.addEventListener('click', function () {
+          ls.set(o[0]);
+          Array.prototype.forEach.call(seg.children, function (c) { c.classList.remove('on'); });
+          b.classList.add('on'); view.render();
+        });
+        seg.appendChild(b);
+      });
+      pop.appendChild(seg);
+    }
     document.body.appendChild(pop);
 
     // position near anchor, clamped to viewport
@@ -627,7 +698,7 @@
       var cap = applyCap(d.xs, convYs(d.ys), d.experiment);
       return { id: id, xs: cap.xs, rawYs: cap.ys, unit: displayUnit(d.unit),
         color: store.resolveColor(id),
-        shape: st.shape, visibility: st.visibility,
+        shape: st.shape, lineStyle: st.lineStyle || 'solid', visibility: st.visibility,
         label: DataModel.datasetLabelForMode(store.data.experiments, id, s.graphMode) };
     }).filter(Boolean);
   }
@@ -767,7 +838,7 @@
       var ys = m.rawYs, sm = g.smooth[m.id];
       if (sm && sm.on) ys = blendSmoothRegion(m.xs, m.rawYs, smoothedYs(m.id, m.rawYs, sm.strength), g.smoothDomain, m);
       return { id: m.id, xs: m.xs, ys: ys, rawYs: m.rawYs, unit: m.unit, color: m.color,
-        shape: m.shape, visibility: m.visibility, plotType: s.plotType,
+        shape: m.shape, lineStyle: m.lineStyle || 'solid', visibility: m.visibility, plotType: s.plotType,
         lineWidth: s.lineWidth, markerSize: s.markerSize, label: m.label };
     });
   }
@@ -1170,7 +1241,10 @@
             store.setDatasetStyle(id, { customColor: hex, arrange: null });   // hand-set: fixed
             swatch.style.background = hex; view.render();
             if (done) store.commit('color');
-          });
+          }, { lineStyle: {
+            get: function () { return store.style(id).lineStyle || 'solid'; },
+            set: function (v) { store.setDatasetStyle(id, { lineStyle: v }); store.commit('line-style'); },
+          } });
         });
         var visBtn = el('button', { class: 'vis-btn', title: 'Visibility: ' + st.visibility,
           html: st.visibility === 'on' ? Icons.eye : st.visibility === 'dim' ? Icons.eyeDim : Icons.eyeOff,
@@ -1730,6 +1804,12 @@
     wrap.appendChild(input);
     wrap.appendChild(el('div', { class: 'row', style: 'margin-top:8px' }, [swatch, styleSel, el('div', { style: 'flex:1' }), add]));
 
+    // snap-to-data toggle (also applies to dropped dual cursors)
+    var snapCb = el('input', { type: 'checkbox' }); snapCb.checked = !!Prefs.data.snapToData;
+    snapCb.addEventListener('change', function () { Prefs.set('snapToData', snapCb.checked); });
+    wrap.appendChild(el('label', { class: 'chk', style: 'margin-top:10px', title: 'Dropped points and dual cursors snap to the nearest real data sample.' },
+      [snapCb, el('span', { class: 'box', html: Icons.check }), el('span', { text: 'Snap to nearest data point' })]));
+
     var list = el('div', { style: 'margin-top:12px' });
     if (g.manualPoints.length) list.appendChild(capLabel('Points', 4));
     g.manualPoints.forEach(function (p) { list.appendChild(manualRow(g, p, 'point')); });
@@ -1838,15 +1918,15 @@
     var out = el('div', { class: 'readout', style: 'margin-top:10px' });
     if (g.cursors.length >= 2 && g.cursors[0] != null && g.cursors[1] != null) {
       var series = seriesForCurrentGraph().filter(function (s) { return s.visibility !== 'off'; });
-      var dt = g.cursors[1] - g.cursors[0];
+      var dt = g.cursors[1] - g.cursors[0], u = currentUnit(), us = u ? (' ' + u) : '', slopeU = u ? (' ' + u + '/s') : ' /s';
       out.appendChild(el('div', { html: '<span class="rk">Δt</span><span class="rv">' + fmt(dt, 3) + ' s</span>' }));
       series.forEach(function (s) {
         var y0 = Analysis.linearInterp(s.xs, s.ys, g.cursors[0]);
         var y1 = Analysis.linearInterp(s.xs, s.ys, g.cursors[1]);
-        var rate = dt !== 0 ? (y1 - y0) / dt : NaN;
+        var slope = dt !== 0 ? (y1 - y0) / dt : NaN;
         out.appendChild(el('div', { html: '<b>' + s.label + '</b>' }));
-        out.appendChild(el('div', { html: '<span class="rk">ΔT</span><span class="rv">' + fmt(y1 - y0, 3) + '</span>' }));
-        out.appendChild(el('div', { html: '<span class="rk">rate</span><span class="rv">' + fmt(rate, 4) + ' /s</span>' }));
+        out.appendChild(el('div', { html: '<span class="rk">ΔT</span><span class="rv">' + fmt(y1 - y0, 3) + us + '</span>' }));
+        out.appendChild(el('div', { html: '<span class="rk">slope</span><span class="rv">' + fmt(slope, 4) + slopeU + '</span>' }));
       });
     } else out.appendChild(el('div', { class: 'hint', text: 'Set both cursors to see measurements.' }));
     wrap.appendChild(out);
@@ -2317,6 +2397,79 @@
     if (skipped.length) unmatchedDialog(skipped, ok.length);
   }
 
+  /* ---- Drag & drop: drop a folder to open it, or a .thermo.json to restore. ---- */
+  function readDirEntry(dirEntry) {
+    return new Promise(function (resolve) {
+      var reader = dirEntry.createReader(), all = [];
+      (function batch() { reader.readEntries(function (es) { if (!es.length) return resolve(all); all = all.concat(es); batch(); }, function () { resolve(all); }); })();
+    });
+  }
+  function collectCsvFromEntry(entry) {
+    if (entry.isFile) {
+      if (!/\.csv$/i.test(entry.name)) return Promise.resolve([]);
+      return new Promise(function (res, rej) { entry.file(res, rej); }).then(function (f) { return f.text(); }).then(function (t) { return [{ name: entry.name, text: t }]; }).catch(function () { return []; });
+    }
+    if (entry.isDirectory) {
+      return readDirEntry(entry).then(function (es) { return Promise.all(es.map(collectCsvFromEntry)).then(function (a) { return [].concat.apply([], a); }); });
+    }
+    return Promise.resolve([]);
+  }
+  function handleDrop(e) {
+    e.preventDefault();
+    var dt = e.dataTransfer; if (!dt) return;
+    var items = dt.items ? Array.prototype.slice.call(dt.items) : [];
+    var files = dt.files ? Array.prototype.slice.call(dt.files) : [];
+    // Snapshot both handle types synchronously — each is only valid before the
+    // first await. Prefer File System Access handles (the same proven reader as
+    // the Open Folder button); fall back to webkitGetAsEntry for other browsers.
+    var handleProms = items
+      .filter(function (it) { return it.kind === 'file' && it.getAsFileSystemHandle; })
+      .map(function (it) { return it.getAsFileSystemHandle().catch(function () { return null; }); });
+    var entries = items.map(function (it) { return it.webkitGetAsEntry ? it.webkitGetAsEntry() : null; }).filter(Boolean);
+
+    // Fallback path: read a dropped folder via the FileSystemEntry reader, or
+    // handle loose .csv / .json files straight from dt.files.
+    function viaEntries() {
+      var dirEntry = entries.filter(function (en) { return en.isDirectory; })[0];
+      if (dirEntry) {
+        lastDirHandle = null;   // no directory handle here, so no silent refresh
+        collectCsvFromEntry(dirEntry).then(function (csvs) {
+          if (!csvs.length) { toast('No .csv files in that folder'); return; }
+          processEntries(csvs, dirEntry.name || 'data', false);
+        });
+        return;
+      }
+      var jsonFile = files.filter(function (f) { return /\.json$/i.test(f.name); })[0];
+      if (jsonFile) { jsonFile.text().then(function (txt) { applyLoadedSession(txt, null); }); return; }
+      var csvFiles = files.filter(function (f) { return /\.csv$/i.test(f.name); });
+      if (csvFiles.length) {
+        Promise.all(csvFiles.map(function (f) { return f.text().then(function (t) { return { name: f.name, text: t }; }); }))
+          .then(function (csvs) { processEntries(csvs, 'dropped data', false); });
+        return;
+      }
+      toast('Drop a data folder or a .thermo.json session');
+    }
+
+    if (handleProms.length) {
+      Promise.all(handleProms).then(function (handles) {
+        handles = handles.filter(Boolean);
+        var dir = handles.filter(function (h) { return h.kind === 'directory'; })[0];
+        if (dir) { lastDirHandle = dir; loadFromDirHandle(dir, false); return; }
+        var jsonH = handles.filter(function (h) { return h.kind === 'file' && /\.json$/i.test(h.name); })[0];
+        if (jsonH) { jsonH.getFile().then(function (f) { return f.text(); }).then(function (txt) { applyLoadedSession(txt, null); }); return; }
+        var csvH = handles.filter(function (h) { return h.kind === 'file' && /\.csv$/i.test(h.name); });
+        if (csvH.length) {
+          Promise.all(csvH.map(function (h) { return h.getFile().then(function (f) { return f.text(); }).then(function (t) { return { name: h.name, text: t }; }); }))
+            .then(function (csvs) { processEntries(csvs, 'dropped data', false); });
+          return;
+        }
+        viaEntries();   // handles resolved to nothing useful — try the entry path
+      });
+      return;
+    }
+    viaEntries();
+  }
+
   function unmatchedDialog(skipped, loadedCount) {
     var body = el('div', {});
     var head = loadedCount
@@ -2504,9 +2657,13 @@
 
   /* ============================ HELP DIALOGS =========================== */
   function aboutDialog() {
+    var info = buildInfo();
+    var stamp = 'Version ' + info.version + ' — first full release' +
+      (info.date ? ' · built ' + info.date : ' · development build');
     modal({ title: 'About ThermoScope', body:
       '<p class="hint" style="line-height:1.6">ThermoScope organizes, graphs, and analyzes DAQami thermocouple exports. It runs entirely in your browser — no install, no server, works offline. Your files never leave your computer.</p>' +
-      '<p class="hint" style="line-height:1.6;margin-top:10px">Built for the Center for Industrial &amp; Medical Ultrasound (CIMU).</p>',
+      '<p class="hint" style="line-height:1.6;margin-top:10px">Built for the Center for Industrial &amp; Medical Ultrasound (CIMU).</p>' +
+      '<p class="hint" style="margin-top:12px;color:var(--text-3)">' + escapeHtml(stamp) + '<br>Made with Claude Opus 4.8</p>',
       actions: [{ label: 'Close', primary: true }] });
   }
   function formatDialog() {
@@ -2585,21 +2742,26 @@
   }
 
   /* ============================ TOOLTIP / STATUS ====================== */
-  function onHover(h, pos) {
-    var tt = els.tooltip;
-    var col = h.primary.color;
-    var u = currentUnit(), us = u ? ' ' + u : '';
+  function hoverReadoutHtml(h) {
+    var col = h.primary.color, u = currentUnit(), us = u ? ' ' + u : '';
     var html = '<div class="tt-title"><span class="tt-swatch" style="background:' + col + '"></span>' + h.primary.label + '</div>';
     html += '<div class="tt-row"><span>time</span><span class="v">' + fmt(h.time, 3) + ' s</span></div>';
     html += '<div class="tt-row"><span>value</span><span class="v">' + fmtT(h.primary.value) + us + '</span></div>';
     html += '<div class="tt-row"><span>d/dt</span><span class="v">' + fmt(h.primary.dydt, 4) + (u ? ' ' + u + '/s' : ' /s') + '</span></div>';
     h.others.forEach(function (o) { html += '<div class="tt-row"><span><span class="tt-swatch" style="display:inline-block;background:' + o.color + '"></span> ' + o.label + '</span><span class="v">' + fmtT(o.value) + '</span></div>'; });
-    tt.innerHTML = html; tt.style.display = 'block';
-    var tw = tt.offsetWidth, th = tt.offsetHeight;
+    return html;
+  }
+  function positionFloatBox(box, pos) {
+    var tw = box.offsetWidth, th = box.offsetHeight;
     var x = pos.clientX + 16, y = pos.clientY + 16;
     if (x + tw > window.innerWidth - 8) x = pos.clientX - tw - 16;
     if (y + th > window.innerHeight - 8) y = pos.clientY - th - 16;
-    tt.style.left = x + 'px'; tt.style.top = y + 'px';
+    box.style.left = Math.max(8, x) + 'px'; box.style.top = Math.max(8, y) + 'px';
+  }
+  function onHover(h, pos) {
+    var tt = els.tooltip, u = currentUnit(), us = u ? ' ' + u : '';
+    tt.innerHTML = hoverReadoutHtml(h); tt.style.display = 'block';
+    positionFloatBox(tt, pos);
     els.sbHover.innerHTML = '<b>t</b> ' + fmt(h.time, 3) + 's &nbsp; <b>T</b> ' + fmtT(h.primary.value) + us + ' &nbsp; <b>d/dt</b> ' + fmt(h.primary.dydt, 4);
   }
   function onHoverEnd() { els.tooltip.style.display = 'none'; els.sbHover.innerHTML = ''; }
@@ -2680,7 +2842,10 @@
     var nd = noData();
     var gk = nd ? null : store.graphKey();
     if (gk !== selectionKey) { selection = {}; overlaySel = null; selectionKey = gk; }   // reset selection when the graph changes
-    els.folderChip.textContent = nd ? 'No data loaded' : (store.data.folderName + ' · ' + store.data.experiments.length + ' exp · ' + store.data.parsedTrials.length + ' files');
+    var dirty = !nd && !!store.state.dirty;
+    els.folderChip.innerHTML = nd ? 'No data loaded'
+      : (dirty ? '<span class="dirty-dot" title="Unsaved changes — Ctrl+S to save"></span>' : '') + escapeHtml(store.data.folderName) + ' · ' + store.data.experiments.length + ' exp · ' + store.data.parsedTrials.length + ' files';
+    document.title = (nd ? 'ThermoScope' : (dirty ? '• ' : '') + store.data.folderName + ' — ThermoScope');
     ['organizeBtn', 'exportPngBtn', 'exportSvgBtn', 'updateFolderBtn'].forEach(function (id) { els[id].disabled = nd; });
     els.undoBtn.disabled = !store.canUndo(); els.redoBtn.disabled = !store.canRedo();
     els.chartEmpty.style.display = nd ? 'flex' : 'none';
@@ -2729,12 +2894,13 @@
       onViewChange: function () { updatePanSliders(); renderChartToolbar(); },
       onAutoModeChange: function () { renderChartToolbar(); },
       onRendered: positionTitleHit,
-      onManualPointMove: function (id, x, y) { var g = store.graph(); g.manualPoints.forEach(function (p) { if (p.id === id) { p.x = x; p.y = y; } }); },
+      onManualPointMove: function (id, x, y) { var g = store.graph(); if (Prefs.data.snapToData) { var sp = snapSample(x, y); x = sp.x; y = sp.y; } g.manualPoints.forEach(function (p) { if (p.id === id) { p.x = x; p.y = y; } }); },
       onManualPointDrop: function () { store.commit('manual-move'); },
       onAnnotationMove: function (id, dx, dy) { var g = store.graph(); (g.annotations || []).forEach(function (a) { if (a.id === id) { a.dx = dx; a.dy = dy; } }); },
       onAnnotationAnchorMove: function (id, x, y, dx, dy) { var g = store.graph(); (g.annotations || []).forEach(function (a) { if (a.id === id) { a.x = x; a.y = y; a.dx = dx; a.dy = dy; } }); },
       onAnnotationDrop: function () { store.commit('annot-move'); },
       onLegendMove: function (corner) { if (store.state.legendCorner !== corner) { store.state.legendCorner = corner; store.commit('legend-move'); } },
+      onLegendItemClick: onLegendItemClick,
       onOverlayClick: onOverlayClick,
       onPlotDblClick: onPlotDblClick,
       onSeriesClick: onSeriesClick,
@@ -2824,6 +2990,16 @@
       if (store.state.dirty && Prefs.data.confirmClose) { e.preventDefault(); e.returnValue = ''; return ''; }
     });
 
+    // drag & drop: drop a folder or a .thermo.json anywhere on the window
+    var dropHint = el('div', { class: 'drop-hint' }, [el('div', { class: 'drop-inner', html: Icons.folder + '<div>Drop a data folder or a .thermo.json session</div>' })]);
+    document.body.appendChild(dropHint);
+    var dragDepth = 0;
+    function hasFiles(e) { return e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0; }
+    window.addEventListener('dragenter', function (e) { if (hasFiles(e)) { e.preventDefault(); dragDepth++; dropHint.classList.add('show'); } });
+    window.addEventListener('dragover', function (e) { if (hasFiles(e)) { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; } });
+    window.addEventListener('dragleave', function () { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) dropHint.classList.remove('show'); });
+    window.addEventListener('drop', function (e) { dragDepth = 0; dropHint.classList.remove('show'); handleDrop(e); });
+
     store.subscribe(updateAll);
     store.subscribe(scheduleAutosave);   // rolling crash-protection autosave
     updateAll();
@@ -2842,12 +3018,40 @@
     };
   }
 
+  /* Snap a placed point / cursor to the nearest real data sample (pixel-nearest
+   * across the visible series), used when "Snap to data" is on. */
+  function snapSample(dataX, dataY) {
+    var L = view && view._layout; if (!L || !L.sx) return { x: dataX, y: dataY };
+    var px = L.sx.toPixel(dataX), py = L.sy.toPixel(dataY), best = null, bestD = Infinity;
+    seriesForCurrentGraph().forEach(function (s) {
+      if (s.visibility === 'off' || !s.xs.length) return;
+      var i = Analysis.nearestIndex(s.xs, dataX);
+      for (var k = Math.max(0, i - 2); k <= Math.min(s.xs.length - 1, i + 2); k++) {
+        if (isNaN(s.ys[k])) continue;
+        var dx = L.sx.toPixel(s.xs[k]) - px, dy = L.sy.toPixel(s.ys[k]) - py, d = dx * dx + dy * dy;
+        if (d < bestD) { bestD = d; best = { x: s.xs[k], y: s.ys[k] }; }
+      }
+    });
+    return best || { x: dataX, y: dataY };
+  }
+  function snapSampleX(dataX) {
+    var L = view && view._layout; if (!L || !L.sx) return dataX;
+    var px = L.sx.toPixel(dataX), best = dataX, bestD = Infinity;
+    seriesForCurrentGraph().forEach(function (s) {
+      if (s.visibility === 'off' || !s.xs.length) return;
+      var i = Analysis.nearestIndex(s.xs, dataX), d = Math.abs(L.sx.toPixel(s.xs[i]) - px);
+      if (d < bestD) { bestD = d; best = s.xs[i]; }
+    });
+    return best;
+  }
+
   function onPlotDblClick(x, y) {
-    var g = store.graph();
+    var g = store.graph(), snap = Prefs.data.snapToData;
     // Route the double-click to whichever placement tool is open.
     if (toolOpen.annotate) { addAnnotationAt(x, y); return; }
-    if (toolOpen.cursor && g.cursors.length < 2) { g.cursors.push(x); store.commit('cursor-add'); return; }
-    g.manualPoints.push({ id: store.uid('pt'), x: x, y: y, color: accentHex(), customLabel: null, showLabel: true });
+    if (toolOpen.cursor && g.cursors.length < 2) { g.cursors.push(snap ? snapSampleX(x) : x); store.commit('cursor-add'); return; }
+    var p = snap ? snapSample(x, y) : { x: x, y: y };
+    g.manualPoints.push({ id: store.uid('pt'), x: p.x, y: p.y, color: accentHex(), customLabel: null, showLabel: true });
     store.commit('manual-dblclick');
   }
 

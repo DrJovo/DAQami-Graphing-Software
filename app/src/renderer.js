@@ -82,7 +82,13 @@
     },
   };
 
-  /* ----------------------------- SVG backend ------------------------------ */
+  /* ----------------------------- SVG backend ------------------------------
+   * Emits a standalone SVG. Text is written as <text> elements referencing a
+   * font-family NAME (the same UI/mono stack the screen uses) rather than as
+   * outlined paths — so exports stay small and remain editable. The trade-off:
+   * a viewer that lacks those fonts substitutes its own, which can shift label
+   * spacing slightly. measureText here is a deliberate approximation used only
+   * for layout math; on screen the browser uses real font metrics. */
   function esc(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
@@ -157,6 +163,9 @@
     toString: function () {
       return '<svg xmlns="http://www.w3.org/2000/svg" width="' + this.w + '" height="' + this.h +
         '" viewBox="0 0 ' + this.w + ' ' + this.h + '">' +
+        '<!-- ThermoScope SVG export. Text uses the system UI font stack (not embedded ' +
+        'outlines); a viewer without these fonts substitutes another and label spacing ' +
+        'may shift slightly. -->' +
         '<defs>' + this.defs.join('') + '</defs>' +
         '<rect width="' + this.w + '" height="' + this.h + '" fill="' + this.bg + '"/>' +
         this.parts.join('') + '</svg>';
@@ -486,10 +495,10 @@
     }
 
     // ---- legend (draggable, snaps to a corner) ----
-    var legendBox = null;
-    if (scene.legend !== false) legendBox = drawLegend(rd, series, ov, plot, T, scene.legendCorner || 'tr', scene._legendDrag);
+    var legendBox = null, legendItemBoxes = [];
+    if (scene.legend !== false) { legendBox = drawLegend(rd, series, ov, plot, T, scene.legendCorner || 'tr', scene._legendDrag, scene); if (legendBox) legendItemBoxes = legendBox.items; }
 
-    return { plot: plot, sx: sx, sy: sy, xTicks: xt, yTicks: yt, titleBox: titleBox, legendBox: legendBox, annotationBoxes: annotationBoxes };
+    return { plot: plot, sx: sx, sy: sy, xTicks: xt, yTicks: yt, titleBox: titleBox, legendBox: legendBox, legendItemBoxes: legendItemBoxes, annotationBoxes: annotationBoxes };
   }
 
   function drawMinor(rd, tk, axis, sx, sy, plot, T) {
@@ -551,7 +560,7 @@
         if (!pen) { rd.moveTo(x, y); pen = true; } else rd.lineTo(x, y);
       }
       if (emphasize && T) rd.strokePath({ color: T.surface, width: baseW * 2.6 + 2, alpha: 0.85 }); // casing halo
-      rd.strokePath({ color: s.color, width: emphasize ? baseW * 1.9 : baseW, alpha: alpha });
+      rd.strokePath({ color: s.color, width: emphasize ? baseW * 1.9 : baseW, alpha: alpha, dash: lineDash(s.lineStyle) });
     }
   }
 
@@ -582,10 +591,11 @@
     return lines.length ? lines : [''];
   }
 
-  function drawLegend(rd, series, ov, plot, T, corner, dragPos) {
+  function drawLegend(rd, series, ov, plot, T, corner, dragPos, scene) {
+    var sel = scene && scene.selection, hasSel = scene && scene.hasSelection;
     var items = [];
-    series.forEach(function (s) { if (s.visibility !== 'off') items.push({ label: s.label, color: s.color, shape: s.plotType === 'scatter' ? s.shape : 'line' }); });
-    (ov.averageLines || []).forEach(function (a) { if (a.label) items.push({ label: a.label, color: a.color, shape: 'line' }); });
+    series.forEach(function (s) { if (s.visibility !== 'off') items.push({ id: s.id, label: s.label, color: s.color, shape: s.plotType === 'scatter' ? s.shape : 'line', dash: lineDash(s.lineStyle), dim: hasSel && !(sel && sel[s.id]) }); });
+    (ov.averageLines || []).forEach(function (a) { if (a.label) items.push({ id: null, label: a.label, color: a.color, shape: 'line', dash: [] }); });
     if (items.length === 0) return null;
     var size = 11, rowH = 17, padX = 10, padY = 8, swatch = 14;
     var maxLabel = 0;
@@ -607,19 +617,22 @@
       var xy = cornerXY(corner); bx = xy.x; by = xy.y;
     }
     rd.roundRect(bx, by, boxW, boxH, 6, { fill: T.surface, fillAlpha: boxAlpha, stroke: T.gridMajor, width: 1 });
+    var itemBoxes = [];
     items.forEach(function (it, i) {
-      var cy = by + padY + i * rowH + rowH / 2;
-      var swx = bx + padX;
+      var rowTop = by + padY + i * rowH, cy = rowTop + rowH / 2, swx = bx + padX;
+      var a = it.dim ? 0.32 : 1;
       if (it.shape === 'line') {
         rd.beginPath(); rd.moveTo(swx, cy); rd.lineTo(swx + swatch, cy);
-        rd.strokePath({ color: it.color, width: 2.6 });
+        rd.strokePath({ color: it.color, width: 2.6, dash: it.dash || [], alpha: a });
       } else {
-        drawMarker(rd, it.shape, swx + swatch / 2, cy, 4, { color: it.color, alpha: 1 });
+        drawMarker(rd, it.shape, swx + swatch / 2, cy, 4, { color: it.color, alpha: a });
       }
-      rd.text(it.label, swx + swatch + 7, cy, { color: T.text, size: size, align: 'left', baseline: 'middle' });
+      rd.text(it.label, swx + swatch + 7, cy, { color: T.text, size: size, align: 'left', baseline: 'middle', alpha: a });
+      if (it.id != null) itemBoxes.push({ id: it.id, x: bx, y: rowTop, w: boxW, h: rowH });
     });
-    return { x: bx, y: by, w: boxW, h: boxH };
+    return { x: bx, y: by, w: boxW, h: boxH, items: itemBoxes };
   }
+  function lineDash(style) { return style === 'dashed' ? [8, 5] : style === 'dotted' ? [2, 4] : []; }
 
   TS.Renderer = {
     CanvasRenderer: CanvasRenderer,
