@@ -494,9 +494,12 @@
       titleBox = { x: cx - tw / 2 - 16, y: 6, w: tw + 16 + 32, h: 26 };  // clickable rename region (CSS px)
     }
 
+    // ---- rescale tool per-dataset edge handles ----
+    if (scene.scaleHandles) drawScaleHandles(rd, scene.scaleHandles, sy, plot, T);
+
     // ---- legend (draggable, snaps to a corner) ----
     var legendBox = null, legendItemBoxes = [];
-    if (scene.legend !== false) { legendBox = drawLegend(rd, series, ov, plot, T, scene.legendCorner || 'tr', scene._legendDrag, scene); if (legendBox) legendItemBoxes = legendBox.items; }
+    if (scene.legend !== false) { legendBox = drawLegend(rd, scene.legendSeries || series, ov, plot, T, scene.legendCorner || 'tr', scene._legendDrag, scene); if (legendBox) legendItemBoxes = legendBox.items; }
 
     return { plot: plot, sx: sx, sy: sy, xTicks: xt, yTicks: yt, titleBox: titleBox, legendBox: legendBox, legendItemBoxes: legendItemBoxes, annotationBoxes: annotationBoxes };
   }
@@ -633,6 +636,28 @@
     return { x: bx, y: by, w: boxW, h: boxH, items: itemBoxes };
   }
   function lineDash(style) { return style === 'dashed' ? [8, 5] : style === 'dotted' ? [2, 4] : []; }
+
+  /* Rescale tool: for each rescaled dataset, a draggable arrow at the left edge
+   * (its low target, where its smallest value sits) and one at the right edge (its
+   * high target), drawn in the dataset's own color. `handles` is an array of
+   * { low, high, color }. Positions are clamped so a handle stays grabbable when
+   * zoomed. */
+  function drawScaleHandles(rd, handles, sy, plot, T) {
+    function clampY(y) { return Math.max(plot.y + 1, Math.min(plot.y + plot.h - 1, y)); }
+    function arrow(xEdge, y, dir, color) {          // dir +1 = points right (left edge), -1 = points left
+      var len = 11, hh = 6, tip = xEdge + dir * len;
+      rd.beginPath(); rd.moveTo(xEdge, y); rd.lineTo(xEdge + dir * (len + 9), y);
+      rd.strokePath({ color: color, width: 1.4, alpha: 0.5 });      // short guide stub into the plot
+      rd.beginPath(); rd.moveTo(tip, y); rd.lineTo(xEdge, y - hh); rd.lineTo(xEdge, y + hh); rd.closePath();
+      rd.fillPath({ color: color, alpha: 1 });                       // solid arrow head
+      rd.beginPath(); rd.moveTo(tip, y); rd.lineTo(xEdge, y - hh); rd.lineTo(xEdge, y + hh); rd.closePath();
+      rd.strokePath({ color: T.surface, width: 1 });                 // light outline for contrast
+    }
+    (handles || []).forEach(function (sh) {
+      arrow(plot.x, clampY(sy.toPixel(sh.low)), 1, sh.color);
+      arrow(plot.x + plot.w, clampY(sy.toPixel(sh.high)), -1, sh.color);
+    });
+  }
 
   TS.Renderer = {
     CanvasRenderer: CanvasRenderer,

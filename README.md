@@ -1,6 +1,6 @@
 # ThermoScope
 
-**Version 1.0 — first full release.**
+**Version 1.0.1.**
 
 A polished, self-contained app for **organizing, graphing, and analyzing DAQami
 thermocouple data**, built for the Center for Industrial & Medical Ultrasound (CIMU).
@@ -74,7 +74,8 @@ its own taskbar icon and no browser chrome — no install, no `.exe`, same feel.
    - **Analysis tools** (right panel, *per-graph* — they never bleed between graphs):
      Statistics (mean / median / mode / std-dev / mean ± SD), Features & Settling
      (with CSV export), Curve Fit (linear / polynomial / logarithmic / exponential
-     with τ and asymptote), Area Under Curve, Smoothing, Manual Plotting, Annotations,
+     with τ and asymptote), Area Under Curve, Smoothing, Rescale (smush or stretch a
+     trace between draggable low/high handles), Manual Plotting, Annotations,
      Dual-Cursor Measure, and Threshold Crossing.
    - **Navigate** — scroll to zoom, **Ctrl+scroll** for X only, **Alt+scroll** for Y
      only, drag to pan, or use the pan sliders (which snap to the data edges). Each
@@ -87,8 +88,9 @@ its own taskbar icon and no browser chrome — no install, no `.exe`, same feel.
 
 **Preferences** (Settings → Preferences, or Ctrl+`,`) cover the temperature unit for
 display and export (Celsius / Fahrenheit / As Recorded), decimal precision, accent
-color, interface density, and a data time cap. Dark/light theme, undo/redo, and an
-unsaved-changes warning are all built in.
+color, interface density, legend sort order (by trial, sensor, or value — ascending or
+descending), and a data time cap. Dark/light theme, undo/redo, and an unsaved-changes
+warning are all built in.
 
 ## Keyboard shortcuts
 
@@ -182,7 +184,7 @@ querystrings. Anything else in `index.html` (the favicon data-URI, the DOM skele
 passes through untouched.
 
 **Versioning.** The public release number lives in one place — `APP_VERSION` in
-`main.js` (currently `'1.0'`). The build date is stamped in automatically: `main.js`
+`main.js` (currently `'1.0.1'`). The build date is stamped in automatically: `main.js`
 carries a `@@BUILD_DATE@@` token that `build.py` replaces with today's date, and both
 appear in the **About** dialog (the un-inlined dev shell leaves the token in place and
 shows "development build"). This app version is separate from the session

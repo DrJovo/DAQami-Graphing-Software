@@ -31,6 +31,10 @@
       areas: [], areaDomain: freshDomain(),        // [datasetId,...]
       smooth: {},             // datasetId -> { on:bool, strength:number }
       smoothDomain: freshDomain(),   // x-range the smoothing is applied over (blended at its edges)
+      // Rescale tool: remap each selected dataset's own value range to its own
+      // [low, high] target (draggable per-dataset edge handles). useInAnalysis
+      // controls whether the analysis tools see the scaled or the original values.
+      scale: { ids: [], targets: {}, useInAnalysis: true },   // targets: id -> { low, high }
       cursors: [],            // up to 2 x-values
       threshold: null,        // null | { level:number }
     };

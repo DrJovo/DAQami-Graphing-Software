@@ -233,6 +233,9 @@
         this._drag = { type: 'legend', offX: p.x - lb.x, offY: p.y - lb.y, ctrl: e.ctrlKey || e.metaKey };
         this._legendDrag = { x: lb.x, y: lb.y }; this.canvas.style.cursor = 'grabbing'; return;
       }
+      // drag a rescale edge handle (vertical only) for one dataset
+      var sh = this._hitScaleHandle(p);
+      if (sh) { this._drag = { type: 'scale', id: sh.id, which: sh.which }; this.canvas.style.cursor = 'ns-resize'; return; }
       // hit-test manual points for dragging
       var hit = this._hitManualPoint(p);
       if (hit) { this._drag = { type: 'point', id: hit.id }; this.canvas.style.cursor = 'grabbing'; return; }
@@ -246,6 +249,20 @@
       for (var i = 0; i < pts.length; i++) {
         var px = L.sx.toPixel(pts[i].x), py = L.sy.toPixel(pts[i].y);
         if (Math.abs(px - p.x) <= 8 && Math.abs(py - p.y) <= 8) return pts[i];
+      }
+      return null;
+    },
+    /* Rescale tool: the per-dataset left-edge (low) and right-edge (high) arrows.
+     * Returns { id, which }. Pixel positions match the clamped renderer positions. */
+    _hitScaleHandle: function (p) {
+      var arr = this._scene && this._scene.scaleHandles, L = this._layout;
+      if (!arr || !arr.length || !L || !L.sy) return null;
+      function clampY(y) { return Math.max(L.plot.y + 1, Math.min(L.plot.y + L.plot.h - 1, y)); }
+      var edge = 16, tol = 9;
+      for (var i = 0; i < arr.length; i++) {
+        var sh = arr[i];
+        if (Math.abs(p.x - L.plot.x) <= edge && Math.abs(p.y - clampY(L.sy.toPixel(sh.low))) <= tol) return { id: sh.id, which: 'low' };
+        if (Math.abs(p.x - (L.plot.x + L.plot.w)) <= edge && Math.abs(p.y - clampY(L.sy.toPixel(sh.high))) <= tol) return { id: sh.id, which: 'high' };
       }
       return null;
     },
@@ -308,6 +325,10 @@
           var snap = (ccy < plt.y + plt.h / 2 ? 't' : 'b') + (ccx < plt.x + plt.w / 2 ? 'l' : 'r');
           this._legendDrag = { x: nx, y: ny, snapCorner: snap };
           this.render();
+        } else if (this._drag.type === 'scale') {
+          var Ls = this._layout;
+          if (this.opts.onScaleHandleMove) this.opts.onScaleHandleMove(this._drag.id, this._drag.which, Ls.sy.toData(p.y));
+          this.render();
         }
         return;
       }
@@ -315,7 +336,10 @@
       // modal / color popover sitting above the chart doesn't drive the crosshair.
       if (!this._layout || !this._layout.sx) return;
       if (e.target === this.canvas && this._inPlot(p)) {
-        if (this._hitAnnotationAnchor(p) || this._hitAnnotation(p) || this._hitLegend(p)) {
+        if (this._hitScaleHandle(p)) {
+          this.canvas.style.cursor = 'ns-resize';
+          if (this._hover) { this._hover = null; this.render(); if (this.opts.onHoverEnd) this.opts.onHoverEnd(); }
+        } else if (this._hitAnnotationAnchor(p) || this._hitAnnotation(p) || this._hitLegend(p)) {
           this.canvas.style.cursor = 'grab';
           if (this._hover) { this._hover = null; this.render(); if (this.opts.onHoverEnd) this.opts.onHoverEnd(); }
         } else {
@@ -346,7 +370,8 @@
             if (lid != null && this.opts.onLegendItemClick) this.opts.onLegendItemClick(lid, { ctrl: lctrl });
             else this.render();
           }
-        } else if (this.opts.onViewChange) this.opts.onViewChange();
+        } else if (type === 'scale') { if (this.opts.onScaleHandleDrop) this.opts.onScaleHandleDrop(); }
+        else if (this.opts.onViewChange) this.opts.onViewChange();
       }
       if (this._down && !this._down.moved && this.opts.onSeriesClick) {
         this.opts.onSeriesClick(this._hitSeries({ x: this._down.x, y: this._down.y }), { ctrl: this._down.ctrl });

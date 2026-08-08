@@ -36,7 +36,7 @@
    * ThermoScope.html; when running the un-inlined dev shell the token is left as-is
    * and reported as a development build. (This is the app release version, distinct
    * from the session FORMAT_VERSION in store.js.) */
-  var APP_VERSION = '1.0';
+  var APP_VERSION = '1.0.1';
   var BUILD_DATE = '@@BUILD_DATE@@';
   function buildInfo() {
     return { version: APP_VERSION, date: BUILD_DATE.indexOf('@@') < 0 ? BUILD_DATE : null };
@@ -184,7 +184,8 @@
 
   /* ---- app-level preferences (persisted on this computer, separate from the
    * workspace/undo/session) ---- */
-  var PREF_DEFAULTS = { accent: 'blue', density: 'comfortable', tempUnit: 'source', exportUnit: 'source', decimals: 3, confirmClose: true, timeCap: null, palette: 'muted', snapToData: false };
+  var PREF_DEFAULTS = { accent: 'blue', density: 'comfortable', tempUnit: 'source', exportUnit: 'source', decimals: 3, confirmClose: true, timeCap: null, palette: 'muted', snapToData: false,
+    legendSort: 'default', legendSortDir: 'asc' };   // legend ordering (see legendSeriesSorted)
   var Prefs = {
     data: Object.assign({}, PREF_DEFAULTS),
     load: function () { try { var s = localStorage.getItem('thermoscope.prefs'); if (s) Object.assign(this.data, JSON.parse(s)); } catch (e) {} },
@@ -685,7 +686,8 @@
   /* Meta for every plottable series in the current graph (raw values, no
    * smoothing). This is the single list every analysis tool and the chart draw
    * from, so Compare Experiments behaves exactly like the other modes. */
-  function graphSeries() {
+  function graphSeries() { return applyScaleTransform(baseGraphSeries()); }
+  function baseGraphSeries() {
     var s = store.state;
     if (s.graphMode === 'COMPARE_EXP') return customSeries();
     // Colors are stable per-dataset (customColor, else a distinct default from a
@@ -702,6 +704,76 @@
         label: DataModel.datasetLabelForMode(store.data.experiments, id, s.graphMode) };
     }).filter(Boolean);
   }
+
+  /* ---- Rescale tool -------------------------------------------------------
+   * Each selected dataset is remapped INDEPENDENTLY: its own value range
+   * [origLo, origHi] is affine-mapped onto its own target [low, high], so every
+   * trace has its own pair of draggable edge handles. It rewrites the GRAPHED
+   * values only (derived from the raw arrays each render, so the raw data is never
+   * touched and the transform is stable/idempotent). A scaled trace is labelled
+   * "<name> (scaled)". The `useInAnalysis` flag decides whether the analysis tools
+   * read these scaled values or the originals (see analysisSeriesList). */
+  function graphScale() {
+    var g = store.graph();
+    if (!g.scale) g.scale = { ids: [], targets: {}, useInAnalysis: true };
+    if (!g.scale.targets) g.scale.targets = {};
+    if (g.scale.useInAnalysis == null) g.scale.useInAnalysis = true;
+    return g.scale;
+  }
+  // Affine-remap ys so its own [min,max] lands on [t.low, t.high].
+  function scaleYsArray(ys, t) {
+    var lo = Infinity, hi = -Infinity, i;
+    for (i = 0; i < ys.length; i++) { var y = ys[i]; if (isNaN(y)) continue; if (y < lo) lo = y; if (y > hi) hi = y; }
+    if (!isFinite(lo) || !isFinite(hi)) return ys;
+    var span = hi - lo, outSpan = t.high - t.low, out = new Float64Array(ys.length);
+    for (i = 0; i < ys.length; i++) { var v = ys[i]; out[i] = isNaN(v) ? NaN : (span > 1e-12 ? t.low + (v - lo) * outSpan / span : t.low + (v - lo)); }
+    return out;
+  }
+  // Scale one dataset's ys if it is selected in the Rescale tool (else unchanged).
+  function scaleYsForId(id, ys) {
+    var sc = graphScale();
+    if (sc.ids.indexOf(id) < 0) return ys;
+    var t = sc.targets[id]; if (!t || t.low == null || t.high == null) return ys;
+    return scaleYsArray(ys, t);
+  }
+  // The un-scaled value range of one dataset (for initializing its handles).
+  function origRangeForId(id) {
+    var base = baseGraphSeries();
+    for (var i = 0; i < base.length; i++) if (base[i].id === id) {
+      var ys = base[i].rawYs, lo = Infinity, hi = -Infinity;
+      for (var j = 0; j < ys.length; j++) { var y = ys[j]; if (isNaN(y)) continue; if (y < lo) lo = y; if (y > hi) hi = y; }
+      return (isFinite(lo) && isFinite(hi)) ? [lo, hi] : null;
+    }
+    return null;
+  }
+  // Apply the per-dataset transform to a series list (rewriting rawYs, tagging the
+  // label "(scaled)"). Used for the CHART series, and for analysis when enabled.
+  function applyScaleTransform(list) {
+    var sc = graphScale();
+    if (!sc.ids.length) return list;
+    return list.map(function (m) {
+      if (sc.ids.indexOf(m.id) < 0) return m;
+      var t = sc.targets[m.id]; if (!t || t.low == null || t.high == null) return m;
+      var copy = {}; for (var k in m) copy[k] = m[k];
+      copy.rawYs = scaleYsArray(m.rawYs, t);
+      copy.label = m.label + ' (scaled)';
+      return copy;
+    });
+  }
+  /* Series/meta the analysis tools compute from: the scaled values (default) or the
+   * originals when "use scaled data in analysis" is unchecked. */
+  function analysisSeriesList() {
+    var sc = graphScale();
+    return sc.useInAnalysis ? graphSeries() : baseGraphSeries();
+  }
+  function analysisMetaMap() { var m = {}; analysisSeriesList().forEach(function (x) { m[x.id] = x; }); return m; }
+  /* Drag handlers for a dataset's on-chart edge arrows (left = low, right = high). */
+  function onScaleHandleMove(id, which, dataY) {
+    var sc = graphScale(), t = sc.targets[id]; if (!t) return;
+    if (which === 'low') t.low = dataY; else t.high = dataY;
+    view.render();
+  }
+  function onScaleHandleDrop() { store.commit('scale-drag'); renderRight(); }
   /* id -> plotted color for the current graph (used by side-panel swatches so
    * they always match the line on the chart). */
   function graphColorMap() { var m = {}; graphSeries().forEach(function (x) { m[x.id] = x.color; }); return m; }
@@ -1029,7 +1101,7 @@
           id: stat.id, dash: stat.kind === 'stddev' ? [6, 4] : (stat.kind === 'mode' ? [2, 3] : []) });
       }
     });
-    var meta = graphMetaMap();
+    var meta = analysisMetaMap();
     var cf = g.curveFit;
     if (cf && cf.ids) cf.ids.forEach(function (id) {
       var m = meta[id]; if (!m) return;
@@ -1086,12 +1158,24 @@
    * statistic is truly frozen. Handles both normal dataset ids and custom-mode ids
    * ('CUST_<key>'), so unchecking a dataset in Custom mode can't shift the line. */
   function statSourceSeries(id) {
+    // Resolve directly (bypassing the current graph's series) to stay frozen, but
+    // still honor the plot time cap so a statistic ends at the last plotted sample —
+    // never counting data the cap trimmed off the graph. When the Rescale tool's
+    // "use scaled data in analysis" is on, apply that dataset's scaling too, so the
+    // statistic matches the plotted (scaled) line.
+    var useScaled = graphScale().useInAnalysis;
     if (id.indexOf('CUST_') === 0) {
-      var d = customResolve(id.slice(5));
-      return d ? { xs: d.xs, ys: convYs(d.ys) } : null;
+      var key = id.slice(5), d = customResolve(key);
+      if (!d) return null;
+      var expNum = +key.split('|')[1].slice(1);
+      var cc = applyCap(d.xs, convYs(d.ys), expNum);
+      return { xs: cc.xs, ys: useScaled ? scaleYsForId(id, cc.ys) : cc.ys };
     }
     var dd = DataModel.resolveDatasetData(store.data.experiments, id);
-    return dd ? { xs: dd.xs, ys: convYs(dd.ys) } : null;
+    if (!dd) return null;
+    var p = DataModel.parseDatasetId(id);
+    var c = applyCap(dd.xs, convYs(dd.ys), p ? p.experiment : null);
+    return { xs: c.xs, ys: useScaled ? scaleYsForId(id, c.ys) : c.ys };
   }
   function statSourceLabel(id) {
     if (id.indexOf('CUST_') === 0) { var d = customResolve(id.slice(5)); return d ? d.label : id; }
@@ -1131,17 +1215,64 @@
     return 'Temperature' + (unit ? ' (' + unit + ')' : '');
   }
 
+  /* Trial/sensor of a series, parsed from its id (handles both normal dataset ids
+   * and custom-mode 'CUST_<key>' ids); used for legend sorting. */
+  function seriesTrial(s) {
+    var p = DataModel.parseDatasetId(s.id);
+    if (p) return p.trial;
+    if (s.id.indexOf('CUST_') === 0) { var pr = s.id.slice(5).split('|'); if (pr[0] === 'R') return +pr[2].slice(1); }
+    return Infinity;   // averages / unknown sort to the end
+  }
+  function seriesSensor(s) {
+    var p = DataModel.parseDatasetId(s.id);
+    if (p) return p.channelName;
+    if (s.id.indexOf('CUST_') === 0) { var pr = s.id.slice(5).split('|'); return pr[0] === 'R' ? pr[3] : pr[2]; }
+    return s.label || '';
+  }
+  /* Order the legend per the Preferences setting (default = as added). Only the
+   * legend order changes; the draw order (z-order) of the series is untouched. */
+  function legendSeriesSorted(series) {
+    var by = Prefs.data.legendSort || 'default';
+    if (by === 'default' || series.length < 2) return series;
+    var dir = Prefs.data.legendSortDir === 'desc' ? -1 : 1;
+    function key(s) {
+      if (by === 'trial') return seriesTrial(s);
+      if (by === 'sensor') return seriesSensor(s);
+      if (by === 'name') return (s.label || '').toLowerCase();
+      var lo = Infinity, hi = -Infinity, sum = 0, c = 0;   // max | min | mean
+      for (var i = 0; i < s.ys.length; i++) { var y = s.ys[i]; if (isNaN(y)) continue; if (y < lo) lo = y; if (y > hi) hi = y; sum += y; c++; }
+      if (!c) return 0;
+      return by === 'max' ? hi : by === 'min' ? lo : sum / c;
+    }
+    return series.map(function (s, i) { return { s: s, k: key(s), i: i }; })
+      .sort(function (a, b) { return a.k < b.k ? -dir : a.k > b.k ? dir : a.i - b.i; })   // stable
+      .map(function (x) { return x.s; });
+  }
+
   function buildScene() {
     var g = store.graph();
     var series = seriesForCurrentGraph();
     return {
-      theme: chartColors(), series: series, overlays: computeOverlays(series, g),
-      boundaries: computeBoundaries(), trialWindow: trialWindow(),
+      theme: chartColors(), series: series, legendSeries: legendSeriesSorted(series),
+      overlays: computeOverlays(series, g),
+      boundaries: computeBoundaries(), trialWindow: trialWindow(), scaleHandles: scaleHandles(g),
       grid: store.state.showGrid, legend: store.state.legend, legendCorner: store.state.legendCorner || 'tr',
       selection: selection, hasSelection: hasSelection(),
       selectedOverlay: overlaySel,
       title: noData() ? null : chartTitle(), xLabel: 'Time (s)', yLabel: yAxisLabel(),
     };
+  }
+  /* One pair of draggable edge arrows per rescaled dataset, in the dataset's own
+   * color (null when the tool is inactive). */
+  function scaleHandles(g) {
+    var sc = graphScale();
+    if (!sc.ids.length) return null;
+    var colors = graphColorMap(), out = [];
+    sc.ids.forEach(function (id) {
+      var t = sc.targets[id]; if (!t || t.low == null || t.high == null) return;
+      out.push({ id: id, low: t.low, high: t.high, color: colors[id] || '#c07f12' });
+    });
+    return out.length ? out : null;
   }
 
   /* ============================ LEFT PANEL ============================== */
@@ -1403,6 +1534,10 @@
       body.appendChild(smoothEditor(g));
     }, 'Apply an adjustable smoothing filter for display — the underlying data is never changed.');
 
+    tool(host, 'scale', Icons.fit, 'Rescale', (g.scale && g.scale.ids && g.scale.ids.length) > 0, function (body) {
+      body.appendChild(scaleEditor(g));
+    }, 'Compress or stretch each selected trace between draggable low/high edge handles — graphed data only.');
+
     tool(host, 'manual', Icons.dots, 'Manual Plotting', (g.manualPoints.length + g.manualLines.length) > 0, function (body) {
       body.appendChild(manualEditor(g));
     }, 'Add your own annotation points and reference lines (or double-click the chart to drop a point).');
@@ -1484,6 +1619,52 @@
         el('span', { class: 'tt-swatch', style: 'background:' + m.color }), el('span', { text: m.label })]));
     });
     wrap.appendChild(list);
+    return wrap;
+  }
+
+  /* ---- Rescale tool editor. Pick datasets; each gets its own low/high handles
+   * (draggable arrows at the graph edges, in the dataset's color) that compress or
+   * stretch that trace. Only the graphed data changes; the raw data is untouched. A
+   * checkbox chooses whether the analysis tools use the scaled or the original values. */
+  function scaleEditor(g) {
+    var sc = graphScale();
+    var wrap = el('div', {});
+    wrap.appendChild(el('p', { class: 'hint', text: 'Smush or stretch each selected trace on its own. Drag the colored arrows at the left (low) and right (high) edges of the graph, or set exact values below. Only the graphed data changes — the raw data is untouched.' }));
+    wrap.appendChild(datasetPicker('Rescale', sc.ids, function (ids) {
+      var next = {};   // keep existing targets; initialize new picks at the data edges (identity)
+      ids.forEach(function (id) { next[id] = sc.targets[id] || (function () { var r = origRangeForId(id); return r ? { low: r[0], high: r[1] } : { low: 0, high: 1 }; })(); });
+      sc.ids = ids; sc.targets = next;
+      store.commit('scale-ids');
+    }));
+    var body = el('div', {});
+    function refresh() {
+      clearNode(body);
+      // Always shown, even with nothing selected, so the analysis preference is
+      // discoverable and can be set ahead of picking datasets.
+      body.appendChild(el('label', { class: 'chk', style: 'margin-top:10px', title: 'When on, statistics, curve fits, features, and area use the scaled values. When off, they use the original data.' },
+        buildToggle(sc.useInAnalysis !== false, function (v) { sc.useInAnalysis = v; store.commit('scale-analysis'); }, 'Use scaled data in analysis tools')));
+      if (!sc.ids.length) { body.appendChild(el('div', { class: 'hint', style: 'margin-top:10px', text: 'Select one or more datasets to rescale.' })); return; }
+      var colors = graphColorMap(), labels = {};
+      graphSeries().forEach(function (m) { labels[m.id] = m.label; });
+      sc.ids.forEach(function (id) {
+        var t = sc.targets[id]; if (!t) return;
+        var row = el('div', { class: 'field', style: 'margin-top:12px' });
+        row.appendChild(el('div', { style: 'display:flex;align-items:center;gap:6px;margin-bottom:5px' }, [
+          el('span', { class: 'tt-swatch', style: 'background:' + (colors[id] || '#888') }),
+          el('span', { class: 'hint', style: 'font-weight:600;color:var(--text-2)', text: labels[id] || id }),
+        ]));
+        var split = el('div', { class: 'split' });
+        split.appendChild(numField('Low (left)', t.low != null ? +t.low.toFixed(4) : 0, function (v) { t.low = v; view.render(); }, function () { store.commit('scale-low'); }));
+        split.appendChild(numField('High (right)', t.high != null ? +t.high.toFixed(4) : 0, function (v) { t.high = v; view.render(); }, function () { store.commit('scale-high'); }));
+        row.appendChild(split);
+        body.appendChild(row);
+      });
+      body.appendChild(el('button', { class: 'btn sm', style: 'margin-top:12px', html: Icons.clear + ' Reset to data range',
+        title: 'Return every handle to its data’s own min and max (no scaling)',
+        onclick: function () { sc.ids.forEach(function (id) { var r = origRangeForId(id); if (r) sc.targets[id] = { low: r[0], high: r[1] }; }); store.commit('scale-reset'); view.render(); renderRight(); } }));
+    }
+    refresh();
+    wrap.appendChild(body);
     return wrap;
   }
 
@@ -1612,7 +1793,7 @@
     var ids = g.features || [];
     if (!ids.length) { out.appendChild(el('div', { class: 'hint', text: 'Select a series above.' })); return; }
     out.appendChild(el('div', { class: 'hint', style: 'margin-bottom:4px', text: 'over ' + domainLabel(g.featureDomain) }));
-    var meta = graphMetaMap(), u = currentUnit(), us = u ? (' ' + u) : '', rateU = u ? (' ' + u + '/s') : ' /s', o = g.featureOpts || {};
+    var meta = analysisMetaMap(), u = currentUnit(), us = u ? (' ' + u) : '', rateU = u ? (' ' + u + '/s') : ' /s', o = g.featureOpts || {};
     ids.forEach(function (id) {
       var m = meta[id]; if (!m) return;
       var r = resolveDomain(m, g.featureDomain);
@@ -1635,7 +1816,7 @@
   function exportFeatureCSV(g) {
     var ids = g.features || [];
     if (!ids.length) { toast('Select datasets first'); return; }
-    var meta = graphMetaMap(), u = currentUnit() || '';
+    var meta = analysisMetaMap(), u = currentUnit() || '';
     var head = ['Dataset', 'Min(' + u + ')', 'MinTime(s)', 'Max(' + u + ')', 'MaxTime(s)', 'Mean(' + u + ')', 'Range(' + u + ')',
       'Start(' + u + ')', 'End(' + u + ')', 'Net(' + u + ')', 'TimeToPeak(s)', 'MaxRate(' + u + '/s)', 'MaxRateTime(s)', 'TimeToThreshold(s)', 'SettlingTime(s)'];
     var rows = [head.map(csvCell).join(',')];
@@ -1690,7 +1871,7 @@
     var cf = g.curveFit, ids = (cf && cf.ids) || [];
     if (!ids.length) { out.appendChild(el('div', { class: 'hint', text: 'Select a series above.' })); return; }
     out.appendChild(el('div', { class: 'hint', style: 'margin-bottom:4px', text: CURVE_MODELS[cf.model] + ' fit over ' + domainLabel(cf.domain) }));
-    var meta = graphMetaMap(), u = currentUnit(), us = u ? (' ' + u) : '';
+    var meta = analysisMetaMap(), u = currentUnit(), us = u ? (' ' + u) : '';
     ids.forEach(function (id) {
       var m = meta[id]; if (!m) return;
       var r = resolveDomain(m, cf.domain);
@@ -1719,7 +1900,7 @@
   function renderAreaReadout(out, g) {
     clearNode(out);
     if (!g.areas.length) { out.appendChild(el('div', { class: 'hint', text: 'Select a series above.' })); return; }
-    var meta = graphMetaMap();
+    var meta = analysisMetaMap();
     g.areas.forEach(function (id) {
       var m = meta[id]; if (!m) return;
       var r = resolveDomain(m, g.areaDomain);
@@ -2079,6 +2260,20 @@
       pane.appendChild(el('h4', { text: 'Layout' }));
       pane.appendChild(prefRow('Interface density', 'Compact tightens spacing to fit more on smaller screens.',
         segmented([{ value: 'comfortable', label: 'Comfortable' }, { value: 'compact', label: 'Compact' }], Prefs.data.density, function (v) { Prefs.set('density', v); refresh(false); })));
+
+      pane.appendChild(el('h4', { text: 'Legend' }));
+      pane.appendChild(prefRow('Sort entries by', 'How the legend orders its entries. "As added" keeps the plotting order.',
+        selectBox([
+          { value: 'default', label: 'As added' },
+          { value: 'trial', label: 'Trial number' },
+          { value: 'sensor', label: 'Sensor name' },
+          { value: 'max', label: 'Maximum value' },
+          { value: 'min', label: 'Minimum value' },
+          { value: 'mean', label: 'Mean value' },
+          { value: 'name', label: 'Name (A–Z)' },
+        ], Prefs.data.legendSort, function (v) { Prefs.set('legendSort', v); refresh(false); })));
+      pane.appendChild(prefRow('Order', 'Least → greatest puts the smallest first (top of the legend); e.g. by trial, Trial 1 on top.',
+        segmented([{ value: 'asc', label: 'Least → greatest' }, { value: 'desc', label: 'Greatest → least' }], Prefs.data.legendSortDir, function (v) { Prefs.set('legendSortDir', v); refresh(false); })));
     }
     function buildUnits() {
       var src = detectSourceTempUnit();
@@ -2658,7 +2853,7 @@
   /* ============================ HELP DIALOGS =========================== */
   function aboutDialog() {
     var info = buildInfo();
-    var stamp = 'Version ' + info.version + ' — first full release' +
+    var stamp = 'Version ' + info.version +
       (info.date ? ' · built ' + info.date : ' · development build');
     modal({ title: 'About ThermoScope', body:
       '<p class="hint" style="line-height:1.6">ThermoScope organizes, graphs, and analyzes DAQami thermocouple exports. It runs entirely in your browser — no install, no server, works offline. Your files never leave your computer.</p>' +
@@ -2705,7 +2900,7 @@
       '<li><b>Statistics</b> — plot the mean, median, mode, standard deviation, or a Mean&nbsp;±&nbsp;SD band across chosen datasets. Each line is frozen when added, so hiding a source trace won\'t change it. Statistics are named automatically; click a name to rename it.</li>' +
       '<li><b>Features &amp; Settling</b> — read the peak, range, net change, time-to-peak, max rate, time-to-threshold and settling time for each dataset over a range, then export the whole table to CSV.</li>' +
       '<li><b>Curve Fit</b> — fit a linear, polynomial, logarithmic, or exponential model over a range. Polynomial captures a spike-and-settle shape; the exponential reads the thermal time constant τ and asymptote (with a direction hint and optional fixed asymptote for exothermic runs). The curve can be solid or dotted and extended across the view.</li>' +
-      '<li><b>More tools</b> — area under the curve, smoothing (over an optional region), manual points and labeled lines, multi-line notes pinned to the chart (drag the note or its dot), a dual-cursor measure, and threshold crossings. Each is kept per-graph, and its dataset picker has All / None and per-group quick-select.</li>' +
+      '<li><b>More tools</b> — area under the curve, smoothing (over an optional region), rescaling a trace between draggable edge handles, manual points and labeled lines, multi-line notes pinned to the chart (drag the note or its dot), a dual-cursor measure, and threshold crossings. Each is kept per-graph, and its dataset picker has All / None and per-group quick-select.</li>' +
       '<li><b>Navigation &amp; legend</b> — scroll or the zoom buttons to zoom, drag to pan. The pan bars snap to the data edges (hold <code>Ctrl</code> to pan freely) and take arrow keys for fine control; each graph remembers its own view. Drag the legend to any corner to move it.</li>' +
       '<li><b>Saving</b> — <code>Ctrl&nbsp;+&nbsp;S</code> saves your analysis back to a file (or <b>Save Session As…</b> for a new one). Unsaved work is autosaved and offered back the next time you open the same folder.</li>' +
       '<li><b>Units &amp; data</b> — pick Celsius, Fahrenheit, or As&nbsp;Recorded for the display and CSV export under <code>Settings &rsaquo; Preferences</code>, where a time cap can also limit how far each trial is plotted. Export PNG, SVG, or organized CSV from <code>Organize &amp; Export</code>.</li>' +
@@ -2900,6 +3095,8 @@
       onAnnotationAnchorMove: function (id, x, y, dx, dy) { var g = store.graph(); (g.annotations || []).forEach(function (a) { if (a.id === id) { a.x = x; a.y = y; a.dx = dx; a.dy = dy; } }); },
       onAnnotationDrop: function () { store.commit('annot-move'); },
       onLegendMove: function (corner) { if (store.state.legendCorner !== corner) { store.state.legendCorner = corner; store.commit('legend-move'); } },
+      onScaleHandleMove: onScaleHandleMove,   // (id, which, dataY)
+      onScaleHandleDrop: onScaleHandleDrop,
       onLegendItemClick: onLegendItemClick,
       onOverlayClick: onOverlayClick,
       onPlotDblClick: onPlotDblClick,
